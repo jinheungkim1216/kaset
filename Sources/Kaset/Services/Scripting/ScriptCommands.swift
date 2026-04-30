@@ -313,3 +313,32 @@ final class DislikeTrackCommand: NSScriptCommand {
         return nil
     }
 }
+
+// MARK: - SeekCommand
+
+/// Seek command: jumps the current track to a specific position in seconds.
+@objc(KasetSeekCommand)
+final class SeekCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let number = self.directParameter as? NSNumber else {
+            logger.error("Seek command failed: invalid position parameter")
+            self.scriptErrorNumber = errAECoercionFail
+            self.scriptErrorString = "Position must be a number (seconds)."
+            return nil
+        }
+
+        let position = number.doubleValue
+
+        guard let playerService = MainActor.assumeIsolated({ getPlayerService() }) else {
+            logger.error("Seek command failed: PlayerService.shared is nil")
+            self.scriptErrorNumber = errPlayerNotAvailable
+            self.scriptErrorString = playerNotAvailableMessage
+            return nil
+        }
+        logger.info("Executing seek command to \(position)s")
+        Task { @MainActor in
+            await playerService.seek(to: position)
+        }
+        return nil
+    }
+}
