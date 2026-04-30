@@ -23,7 +23,7 @@ struct PlayerStateSnapshotTests {
     }
 
     @Test("Dictionary includes track sub-dictionary when track is set")
-    func dictionaryWithTrack() {
+    func dictionaryWithTrack() throws {
         let service = PlayerService()
         service.currentTrack = Song(
             id: "test-id",
@@ -36,25 +36,25 @@ struct PlayerStateSnapshotTests {
         )
 
         let dict = PlayerStateSnapshot.makePlayerInfoDictionary(from: service)
-        let track = try? #require(dict["currentTrack"] as? [String: Any])
+        let track = try #require(dict["currentTrack"] as? [String: Any])
 
-        #expect(track?["name"] as? String == "Test Song")
-        #expect(track?["artist"] as? String == "Test Artist")
-        #expect(track?["album"] as? String == "Test Album")
-        #expect(track?["videoId"] as? String == "test-video-id")
-        #expect(track?["duration"] as? TimeInterval == 180)
-        #expect(track?["artworkURL"] as? String == "https://example.com/thumb.jpg")
+        #expect(track["name"] as? String == "Test Song")
+        #expect(track["artist"] as? String == "Test Artist")
+        #expect(track["album"] as? String == "Test Album")
+        #expect(track["videoId"] as? String == "test-video-id")
+        #expect(track["duration"] as? TimeInterval == 180)
+        #expect(track["artworkURL"] as? String == "https://example.com/thumb.jpg")
     }
 
     @Test("JSON output is valid and round-trips to the dictionary")
-    func jsonRoundTrip() {
+    func jsonRoundTrip() throws {
         let service = PlayerService()
         let json = PlayerStateSnapshot.makePlayerInfoJSON(from: service)
 
-        let data = try? #require(json.data(using: .utf8))
-        let parsed = try? #require(JSONSerialization.jsonObject(with: data ?? Data()) as? [String: Any])
-        #expect(parsed?["repeating"] as? String == "off")
-        #expect(parsed?["likeStatus"] as? String == "none")
+        let data = try #require(json.data(using: .utf8))
+        let parsed = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(parsed["repeating"] as? String == "off")
+        #expect(parsed["likeStatus"] as? String == "none")
     }
 
     @Test("Repeat mode mapping covers every case")
