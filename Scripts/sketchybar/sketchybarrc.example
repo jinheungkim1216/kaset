@@ -3,6 +3,15 @@
 # Plugins are expected at $KASET_PLUGIN_DIR (default:
 # ~/.config/sketchybar/plugins/kaset). Customize colors / positions /
 # widths to taste.
+#
+# Visual layout (left → right of right group):
+#
+#   [artwork] [title] [progress] [time] [⏮] [▶] [⏭]
+#    │── album art ──│── navigation ──│── controls ──│
+#
+# SketchyBar's `right` anchor places earlier-added items closest to the
+# right edge, so the `--add` calls below run in *reverse* visual order:
+# next is added first (rightmost), artwork last (leftmost).
 
 KASET_PLUGIN_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset"
 
@@ -10,26 +19,12 @@ KASET_PLUGIN_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset"
 # to it so they all refresh together on track / playback changes.
 sketchybar --add event kaset_update
 
-# Album art (background-image item; set by kaset_artwork.sh when track changes)
-sketchybar --add item kaset.artwork right \
-           --set kaset.artwork \
-                 background.image.scale=0.15 \
-                 background.color=0x00000000 \
-                 padding_left=4 padding_right=4
-
-# Track + artist label
-sketchybar --add item kaset.title right \
-           --set kaset.title \
-                 label.font="SF Pro:Semibold:13.0" \
-                 label.max_chars=30 \
-                 padding_left=4 padding_right=8 \
-           --subscribe kaset.title kaset_update
-
-# Previous-track button
-sketchybar --add item kaset.prev right \
-           --set kaset.prev \
-                 icon="⏮" \
-                 click_script="$KASET_PLUGIN_DIR/kaset_prev.sh" \
+# ── Controls (rightmost on screen) ───────────────────────────────────
+# Next-track button
+sketchybar --add item kaset.next right \
+           --set kaset.next \
+                 icon="⏭" \
+                 click_script="$KASET_PLUGIN_DIR/kaset_next.sh" \
                  padding_left=2 padding_right=2
 
 # Play / pause button — also acts as the 1-Hz driver that re-fetches state.
@@ -44,12 +39,21 @@ sketchybar --add item kaset.play_pause right \
                  padding_left=2 padding_right=2 \
            --subscribe kaset.play_pause kaset_update
 
-# Next-track button
-sketchybar --add item kaset.next right \
-           --set kaset.next \
-                 icon="⏭" \
-                 click_script="$KASET_PLUGIN_DIR/kaset_next.sh" \
+# Previous-track button
+sketchybar --add item kaset.prev right \
+           --set kaset.prev \
+                 icon="⏮" \
+                 click_script="$KASET_PLUGIN_DIR/kaset_prev.sh" \
                  padding_left=2 padding_right=2
+
+# ── Navigation (middle) ──────────────────────────────────────────────
+# Position / duration label, e.g. "1:23 / 3:45"
+sketchybar --add item kaset.time right \
+           --set kaset.time \
+                 label="—:— / —:—" \
+                 label.font="SF Mono:Regular:11.0" \
+                 padding_left=4 padding_right=8 \
+           --subscribe kaset.time kaset_update
 
 # Progress slider — clicking sets the target via kaset_seek.sh
 sketchybar --add slider kaset.progress right 100 \
@@ -60,13 +64,20 @@ sketchybar --add slider kaset.progress right 100 \
                  padding_left=4 padding_right=4 \
            --subscribe kaset.progress kaset_update
 
-# Position / duration label, e.g. "1:23 / 3:45"
-sketchybar --add item kaset.time right \
-           --set kaset.time \
-                 label="—:— / —:—" \
-                 label.font="SF Mono:Regular:11.0" \
+# Track + artist label
+sketchybar --add item kaset.title right \
+           --set kaset.title \
+                 label.font="SF Pro:Semibold:13.0" \
+                 label.max_chars=30 \
                  padding_left=4 padding_right=8 \
-           --subscribe kaset.time kaset_update
+           --subscribe kaset.title kaset_update
+
+# ── Album art (leftmost on screen) ───────────────────────────────────
+sketchybar --add item kaset.artwork right \
+           --set kaset.artwork \
+                 background.image.scale=0.15 \
+                 background.color=0x00000000 \
+                 padding_left=4 padding_right=4
 
 # ─── ASCII fallback icons ────────────────────────────────────────────
 # If you don't have SF Pro / Unicode glyphs rendering well in SketchyBar,
