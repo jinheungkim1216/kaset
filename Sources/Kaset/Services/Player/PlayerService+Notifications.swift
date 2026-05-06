@@ -6,13 +6,13 @@ extension PlayerService {
     /// `DistributedNotificationCenter.default()`.
     enum PlayerNotification {
         /// Posted when `currentTrack` changes (videoId differs, including nil ⇄ non-nil).
-        public static let trackChanged = Notification.Name("app.kaset.player.trackChanged")
+        static let trackChanged = Notification.Name("app.kaset.player.trackChanged")
 
         /// Posted when `state` transitions (loading / playing / paused / etc.).
-        public static let playbackStateChanged = Notification.Name("app.kaset.player.playbackStateChanged")
+        static let playbackStateChanged = Notification.Name("app.kaset.player.playbackStateChanged")
 
         /// Posted when `currentTrackLikeStatus` changes.
-        public static let likeStatusChanged = Notification.Name("app.kaset.player.likeStatusChanged")
+        static let likeStatusChanged = Notification.Name("app.kaset.player.likeStatusChanged")
     }
 
     /// Notification center used to broadcast player events.
