@@ -14,10 +14,10 @@ struct PlayerStateSnapshotTests {
         #expect(dict["isPaused"] as? Bool == false)
         #expect(dict["position"] as? Double == 0)
         #expect(dict["duration"] as? Double == 0)
-        #expect(dict["volume"] as? Int != nil)
+        #expect(dict["volume"] is Int)
         #expect(dict["shuffling"] as? Bool == false)
         #expect(dict["repeating"] as? String == "off")
-        #expect(dict["muted"] as? Bool != nil)
+        #expect(dict["muted"] is Bool)
         #expect(dict["likeStatus"] as? String == "none")
         #expect(dict["currentTrack"] == nil)
     }
