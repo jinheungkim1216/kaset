@@ -6,7 +6,16 @@ set -euo pipefail
 PLUGIN_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset"
 LAST_VIDEO_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-last-video.txt"
 
+# Bail out cleanly if sketchybar isn't on PATH (e.g. uninstalled / not yet
+# installed). At 1Hz, `command not found` would otherwise spam the log.
+command -v sketchybar >/dev/null 2>&1 || exit 0
+
 INFO=$(osascript -e 'tell application "Kaset" to get player info' 2>/dev/null) || INFO='{}'
+
+# Validate JSON. `osascript` can exit 0 but emit a non-JSON string
+# (e.g. an AppleScript runtime warning); without this guard, jq would
+# fail under `set -e` and silently kill the driver.
+printf '%s' "$INFO" | jq -e . >/dev/null 2>&1 || INFO='{}'
 
 # Parse JSON. `// ""` falls back to empty string for missing keys; `// 0` for numbers.
 NAME=$(printf '%s' "$INFO"        | jq -r '.currentTrack.name      // ""')
@@ -35,7 +44,7 @@ else
     PCT=0
 fi
 
-# Play/pause icon. SF Symbols glyphs by default; ASCII fallback via env vars.
+# Play/pause icon. Unicode glyphs by default; override via env vars (e.g. ASCII).
 if [[ "$IS_PLAYING" == "true" ]]; then
     PLAY_ICON="${KASET_ICON_PAUSE:-⏸}"
 else

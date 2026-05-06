@@ -7,8 +7,13 @@ set -euo pipefail
 
 PERCENTAGE="${PERCENTAGE:-0}"
 
-DURATION=$(osascript -e 'tell application "Kaset" to get player info' 2>/dev/null \
-    | jq -r '.duration // 0')
+INFO=$(osascript -e 'tell application "Kaset" to get player info' 2>/dev/null) || INFO='{}'
+# osascript can exit 0 but emit non-JSON; without this validation the
+# subsequent jq invocation would fail under `set -e` and the click
+# would silently no-op.
+printf '%s' "$INFO" | jq -e . >/dev/null 2>&1 || INFO='{}'
+
+DURATION=$(printf '%s' "$INFO" | jq -r '.duration // 0')
 
 if [[ "$DURATION" == "0" || "$DURATION" == "null" || -z "$DURATION" ]]; then
     exit 0

@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-osascript -e 'tell application "Kaset" to next track'
+osascript -e 'tell application "Kaset" to next track' 2>/dev/null || true

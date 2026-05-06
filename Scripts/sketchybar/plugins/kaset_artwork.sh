@@ -21,11 +21,17 @@ find "$CACHE_DIR" -type f -mtime +30 -delete 2>/dev/null || true
 ARTWORK_FILE="$CACHE_DIR/artwork-${VIDEO_ID}.jpg"
 
 if [[ ! -f "$ARTWORK_FILE" ]]; then
-    if ! curl -fsSL --max-time 5 -o "$ARTWORK_FILE" "$ARTWORK_URL"; then
-        rm -f "$ARTWORK_FILE"
+    # Download to a temp file and rename atomically so a concurrent
+    # invocation can't observe (or clobber) a partially-written file.
+    TMP_FILE="${ARTWORK_FILE}.tmp.$$"
+    if ! curl -fsSL --max-time 5 -o "$TMP_FILE" "$ARTWORK_URL"; then
+        rm -f "$TMP_FILE"
         exit 0
     fi
+    mv -f "$TMP_FILE" "$ARTWORK_FILE"
 fi
 
+command -v sketchybar >/dev/null 2>&1 || exit 0
+
 sketchybar --set kaset.artwork background.image="$ARTWORK_FILE" \
-                                background.image.scale=0.15
+    background.image.scale=0.15
