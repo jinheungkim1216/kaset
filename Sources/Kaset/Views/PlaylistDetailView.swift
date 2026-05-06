@@ -12,6 +12,7 @@ struct PlaylistDetailView: View {
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(\.dismiss) private var dismiss
     /// Tracks whether this playlist has been added to library in this session.
     @State private var isAddedToLibrary: Bool = false
     /// Whether the refine playlist sheet is visible.
@@ -63,6 +64,7 @@ struct PlaylistDetailView: View {
         )
         .navigationTitle(self.playlist.title)
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
+        .topFade()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {
             } else {
@@ -203,76 +205,159 @@ struct PlaylistDetailView: View {
         )
 
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 16) {
-                Button {
-                    self.playAll(
-                        detail.tracks, fallbackArtist: detail.author?.name,
-                        fallbackAlbum: fallbackAlbum
-                    )
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                }
-                .buttonStyle(.glassProminent)
-                .controlSize(.large)
-                .disabled(playableTracks.isEmpty)
+            ViewThatFits(in: .horizontal) {
+                self.headerActionButtons(
+                    detail,
+                    playableTracks: playableTracks,
+                    fallbackAlbum: fallbackAlbum,
+                    showsTitles: true
+                )
+                .fixedSize(horizontal: true, vertical: false)
 
-                Button {
-                    SongActionsHelper.addSongsToQueueNext(
-                        playableTracks,
-                        playerService: self.playerService,
-                        fallbackArtist: detail.author?.name,
-                        fallbackAlbum: fallbackAlbum
-                    )
-                } label: {
-                    Label("Play Next", systemImage: "text.insert")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(playableTracks.isEmpty)
-
-                Button {
-                    SongActionsHelper.addSongsToQueueLast(
-                        playableTracks,
-                        playerService: self.playerService,
-                        fallbackArtist: detail.author?.name,
-                        fallbackAlbum: fallbackAlbum
-                    )
-                } label: {
-                    Label("Add to Queue", systemImage: "text.append")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(playableTracks.isEmpty)
-
-                let currentlyInLibrary = self.isInLibrary || self.isAddedToLibrary
-                Button {
-                    self.toggleLibrary()
-                } label: {
-                    Label(
-                        currentlyInLibrary
-                            ? String(localized: "Added to Library")
-                            : String(localized: "Add to Library"),
-                        systemImage: currentlyInLibrary ? "checkmark.circle.fill" : "plus.circle"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-
-                if !detail.isAlbum {
-                    Button {
-                        self.showRefineSheet = true
-                    } label: {
-                        Label("Refine", systemImage: "sparkles")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .requiresIntelligence()
-                }
+                self.headerActionButtons(
+                    detail,
+                    playableTracks: playableTracks,
+                    fallbackAlbum: fallbackAlbum,
+                    showsTitles: false
+                )
             }
 
             Text(self.metadataText(for: detail))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private func headerActionButtons(
+        _ detail: PlaylistDetail,
+        playableTracks: [Song],
+        fallbackAlbum: Album,
+        showsTitles: Bool
+    ) -> some View {
+        HStack(spacing: 16) {
+            Button {
+                self.playAll(
+                    detail.tracks, fallbackArtist: detail.author?.name,
+                    fallbackAlbum: fallbackAlbum
+                )
+            } label: {
+                self.headerActionLabel(localized: "Play", systemImage: "play.fill", showsTitle: showsTitles)
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(playableTracks.isEmpty)
+
+            Button {
+                SongActionsHelper.addSongsToQueueNext(
+                    playableTracks,
+                    playerService: self.playerService,
+                    fallbackArtist: detail.author?.name,
+                    fallbackAlbum: fallbackAlbum
+                )
+            } label: {
+                self.headerActionLabel(localized: "Play Next", systemImage: "text.insert", showsTitle: showsTitles)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(playableTracks.isEmpty)
+
+            Button {
+                SongActionsHelper.addSongsToQueueLast(
+                    playableTracks,
+                    playerService: self.playerService,
+                    fallbackArtist: detail.author?.name,
+                    fallbackAlbum: fallbackAlbum
+                )
+            } label: {
+                self.headerActionLabel(localized: "Add to Queue", systemImage: "text.append", showsTitle: showsTitles)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(playableTracks.isEmpty)
+
+            let currentlyInLibrary = self.isInLibrary || self.isAddedToLibrary
+            let libraryTitle = currentlyInLibrary
+                ? String(localized: "Added to Library")
+                : String(localized: "Add to Library")
+            Button {
+                self.toggleLibrary()
+            } label: {
+                self.headerActionLabel(
+                    libraryTitle,
+                    systemImage: currentlyInLibrary ? "checkmark.circle.fill" : "plus.circle",
+                    showsTitle: showsTitles
+                )
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+
+            if !detail.isAlbum {
+                Button {
+                    self.showRefineSheet = true
+                } label: {
+                    self.headerActionLabel(localized: "Refine", systemImage: "sparkles", showsTitle: showsTitles)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .requiresIntelligence()
+
+                if detail.canDelete {
+                    Button(role: .destructive) {
+                        SongActionsHelper.confirmDeletePlaylist(
+                            Playlist(
+                                id: detail.id,
+                                title: detail.title,
+                                description: detail.description,
+                                thumbnailURL: detail.thumbnailURL,
+                                trackCount: detail.trackCount,
+                                author: detail.author,
+                                canDelete: detail.canDelete
+                            ),
+                            client: self.viewModel.client,
+                            libraryViewModel: self.libraryViewModel
+                        ) {
+                            self.dismiss()
+                        }
+                    } label: {
+                        self.headerActionLabel(
+                            localized: "Delete Playlist",
+                            systemImage: "trash",
+                            showsTitle: showsTitles
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .tint(.red)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func headerActionLabel(
+        localized title: LocalizedStringKey,
+        systemImage: String,
+        showsTitle: Bool
+    ) -> some View {
+        if showsTitle {
+            Label(title, systemImage: systemImage)
+        } else {
+            Image(systemName: systemImage)
+                .accessibilityLabel(Text(title))
+        }
+    }
+
+    @ViewBuilder
+    private func headerActionLabel(
+        _ title: String,
+        systemImage: String,
+        showsTitle: Bool
+    ) -> some View {
+        if showsTitle {
+            Label(title, systemImage: systemImage)
+        } else {
+            Image(systemName: systemImage)
+                .accessibilityLabel(title)
         }
     }
 
@@ -325,78 +410,27 @@ struct PlaylistDetailView: View {
         _ track: Song, index: Int, tracks: [Song], isAlbum: Bool, author: String?,
         fallbackAlbum: Album? = nil
     ) -> some View {
-        Button {
-            self.playTrackInQueue(
-                tracks: tracks, startingAt: index, fallbackArtist: author,
-                fallbackAlbum: fallbackAlbum
-            )
-        } label: {
-            HStack(spacing: 12) {
-                Group {
-                    if self.playerService.currentTrack?.videoId == track.videoId {
-                        NowPlayingIndicator(isPlaying: self.playerService.isPlaying, size: 14)
-                    } else {
-                        Text("\(index + 1)")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 28, alignment: .trailing)
-
-                // Thumbnail - only show for playlists (different album art per track)
-                // Albums share the same artwork, so we hide per-track thumbnails
-                if !isAlbum {
-                    CachedAsyncImage(url: track.thumbnailURL) { image in
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Rectangle()
-                            .fill(.quaternary)
-                    }
-                    .frame(width: 40, height: 40)
-                    .clipShape(.rect(cornerRadius: 4))
-                }
-
-                // Title and artist
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(track.title)
-                        .font(.system(size: 14))
-                        .foregroundStyle(
-                            self.playerService.currentTrack?.videoId == track.videoId
-                                ? .red : .primary
-                        )
-                        .lineLimit(1)
-
-                    Text(track.artistsDisplay)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text(track.durationDisplay)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 45, alignment: .trailing)
+        PlaylistTrackRow(
+            track: track,
+            index: index,
+            isAlbum: isAlbum,
+            onPlay: {
+                self.playTrackInQueue(
+                    tracks: tracks, startingAt: index, fallbackArtist: author,
+                    fallbackAlbum: fallbackAlbum
+                )
+            },
+            menu: {
+                self.trackContextMenu(
+                    track,
+                    index: index,
+                    tracks: tracks,
+                    author: author,
+                    fallbackAlbum: fallbackAlbum
+                )
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 4)
-            .contentShape(Rectangle())
-            .opacity(track.isPlayable ? 1 : 0.5)
-        }
-        .buttonStyle(.interactiveRow(cornerRadius: 6))
-        .disabled(!track.isPlayable)
+        )
         .staggeredAppearance(index: min(index, 10))
-        .contextMenu {
-            self.trackContextMenu(
-                track,
-                index: index,
-                tracks: tracks,
-                author: author,
-                fallbackAlbum: fallbackAlbum
-            )
-        }
     }
 
     // MARK: - Actions
@@ -448,6 +482,10 @@ struct PlaylistDetailView: View {
             Divider()
 
             AddToQueueContextMenu(song: track, playerService: self.playerService)
+
+            Divider()
+
+            AddToPlaylistContextMenu(song: track, client: self.viewModel.client)
 
             Divider()
 
@@ -695,6 +733,81 @@ struct PlaylistDetailView: View {
 
         self.partialChanges = nil
         self.isRefining = false
+    }
+}
+
+// MARK: - PlaylistTrackRow
+
+@available(macOS 26.0, *)
+private struct PlaylistTrackRow<Menu: View>: View {
+    let track: Song
+    let index: Int
+    let isAlbum: Bool
+    let onPlay: () -> Void
+    @ViewBuilder let menu: () -> Menu
+
+    @State private var isHovered: Bool = false
+    @Environment(PlayerService.self) private var playerService
+
+    var body: some View {
+        let isCurrent = self.playerService.currentTrack?.videoId == self.track.videoId
+
+        Button(action: self.onPlay) {
+            HStack(spacing: 12) {
+                Group {
+                    if isCurrent {
+                        NowPlayingIndicator(isPlaying: self.playerService.isPlaying, size: 14)
+                    } else {
+                        Text("\(self.index + 1)")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 28, alignment: .trailing)
+
+                if !self.isAlbum {
+                    CachedAsyncImage(url: self.track.thumbnailURL) { image in
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Rectangle().fill(.quaternary)
+                    }
+                    .frame(width: 40, height: 40)
+                    .clipShape(.rect(cornerRadius: 4))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(self.track.title)
+                            .font(.system(size: 14))
+                            .foregroundStyle(isCurrent ? .red : .primary)
+                            .lineLimit(1)
+                        if self.track.isExplicit == true {
+                            ExplicitBadge()
+                        }
+                    }
+                    Text(self.track.artistsDisplay)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                LikeButton(song: self.track, isRowHovered: self.isHovered)
+
+                Text(self.track.durationDisplay)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 45, alignment: .trailing)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+            .opacity(self.track.isPlayable ? 1 : 0.5)
+        }
+        .buttonStyle(.interactiveRow(cornerRadius: 6))
+        .disabled(!self.track.isPlayable)
+        .onHover { hovering in self.isHovered = hovering }
+        .contextMenu { self.menu() }
     }
 }
 
