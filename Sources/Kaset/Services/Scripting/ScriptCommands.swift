@@ -249,72 +249,26 @@ final class ToggleMuteCommand: NSScriptCommand {
 // MARK: - GetPlayerInfoCommand
 
 /// GetPlayerInfo command: returns current player state as JSON.
-/// This is a synchronous operation that returns immediately.
+/// Synchronous; returns immediately.
 @objc(KasetGetPlayerInfoCommand)
 final class GetPlayerInfoCommand: NSScriptCommand {
     override func performDefaultImplementation() -> Any? {
-        // AppleScript runs on main thread, so we can assume MainActor isolation
-        let result = MainActor.assumeIsolated { () -> String in
+        // AppleScript runs on main thread, so we can assume MainActor isolation.
+        let json = MainActor.assumeIsolated { () -> String? in
             guard let playerService = getPlayerService() else {
                 logger.error("GetPlayerInfo command failed: PlayerService.shared is nil")
-                return "{\"error\": \"Player not available\"}"
+                return nil
             }
-
             logger.info("Executing getPlayerInfo command")
-
-            let track = playerService.currentTrack
-            let repeatMode = switch playerService.repeatMode {
-            case .off: "off"
-            case .all: "all"
-            case .one: "one"
-            }
-
-            let likeStatus = switch playerService.currentTrackLikeStatus {
-            case .like: "liked"
-            case .dislike: "disliked"
-            case .indifferent: "none"
-            }
-
-            var info: [String: Any] = [
-                "isPlaying": playerService.isPlaying,
-                "isPaused": playerService.state == .paused,
-                "position": playerService.progress,
-                "duration": playerService.duration,
-                "volume": Int(playerService.volume * 100),
-                "shuffling": playerService.shuffleEnabled,
-                "repeating": repeatMode,
-                "muted": playerService.isMuted,
-                "likeStatus": likeStatus,
-            ]
-
-            if let track {
-                info["currentTrack"] = [
-                    "name": track.title,
-                    "artist": track.artistsDisplay,
-                    "album": track.album?.title ?? "",
-                    "duration": track.duration ?? 0,
-                    "videoId": track.videoId,
-                    "artworkURL": track.thumbnailURL?.absoluteString ?? "",
-                ]
-            }
-
-            if let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]),
-               let json = String(data: data, encoding: .utf8)
-            {
-                return json
-            }
-
-            logger.error("GetPlayerInfo command failed: JSON serialization error")
-            return "{}"
+            return PlayerStateSnapshot.makePlayerInfoJSON(from: playerService)
         }
 
-        // Set error if player wasn't available (check by looking at result)
-        if result.contains("\"error\"") {
+        guard let json else {
             scriptErrorNumber = errPlayerNotAvailable
             scriptErrorString = playerNotAvailableMessage
+            return "{\"error\": \"Player not available\"}"
         }
-
-        return result
+        return json
     }
 }
 
@@ -355,6 +309,35 @@ final class DislikeTrackCommand: NSScriptCommand {
         logger.info("Executing dislikeTrack command")
         MainActor.assumeIsolated {
             playerService.dislikeCurrentTrack()
+        }
+        return nil
+    }
+}
+
+// MARK: - SeekCommand
+
+/// Seek command: jumps the current track to a specific position in seconds.
+@objc(KasetSeekCommand)
+final class SeekCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let number = self.directParameter as? NSNumber else {
+            logger.error("Seek command failed: invalid position parameter")
+            self.scriptErrorNumber = errAECoercionFail
+            self.scriptErrorString = "Position must be a number (seconds)."
+            return nil
+        }
+
+        let position = number.doubleValue
+
+        guard let playerService = MainActor.assumeIsolated({ getPlayerService() }) else {
+            logger.error("Seek command failed: PlayerService.shared is nil")
+            self.scriptErrorNumber = errPlayerNotAvailable
+            self.scriptErrorString = playerNotAvailableMessage
+            return nil
+        }
+        logger.info("Executing seek command to \(position)s")
+        Task { @MainActor in
+            await playerService.seek(to: position)
         }
         return nil
     }

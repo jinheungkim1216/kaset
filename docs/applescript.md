@@ -11,6 +11,7 @@ Kaset supports AppleScript for automation with tools like Raycast, Alfred, and S
 | `playpause` | Toggle play/pause |
 | `next track` | Skip to next track |
 | `previous track` | Go to previous track |
+| `seek to N` | Seek to position N (seconds) |
 | `set volume N` | Set volume (0-100) |
 | `toggle mute` | Mute/unmute |
 | `toggle shuffle` | Toggle shuffle mode |
@@ -30,6 +31,20 @@ tell application "Kaset"
     toggle shuffle
 end tell
 ```
+
+### Seek to a Position
+
+```applescript
+tell application "Kaset"
+    seek to 90
+end tell
+```
+
+```bash
+osascript -e 'tell application "Kaset" to seek to 90'
+```
+
+The position is clamped to `[0, duration]`. Floating-point seconds are accepted.
 
 ### Get Player State
 
@@ -128,3 +143,7 @@ tell application "Kaset"
     playpause
 end tell
 ```
+
+## See Also
+
+- [Distributed Notifications](distributed-notifications.md) — push-style player events for processes that want to react without polling.

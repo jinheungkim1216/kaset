@@ -411,4 +411,75 @@ struct ScriptCommandsTests {
 
         #expect(command.scriptErrorNumber == -1728)
     }
+
+    // MARK: - SeekCommand Tests
+
+    @Test("Seek sets error when PlayerService is nil")
+    func seekSetsErrorWhenNil() {
+        PlayerService.shared = nil
+
+        let command = SeekCommand()
+        command.directParameter = 30 as NSNumber
+        _ = command.performDefaultImplementation()
+
+        #expect(command.scriptErrorNumber == -1728)
+        #expect(command.scriptErrorString?.contains("Player service not initialized") == true)
+    }
+
+    @Test("Seek sets error for invalid parameter type")
+    func seekSetsErrorForInvalidParameter() {
+        let playerService = PlayerService()
+        PlayerService.shared = playerService
+
+        let command = SeekCommand()
+        command.directParameter = "not a number" as NSString
+        _ = command.performDefaultImplementation()
+
+        #expect(command.scriptErrorNumber == errAECoercionFail)
+        #expect(command.scriptErrorString?.contains("must be a number") == true)
+
+        PlayerService.shared = nil
+    }
+
+    @Test("Seek forwards integer parameter to PlayerService.seek(to:)")
+    func seekForwardsIntegerParameter() async {
+        let playerService = PlayerService()
+        // We use the deferred-restore early-return as a unit-test seam: it lets
+        // PlayerService.seek(to:) write `progress` synchronously without touching
+        // the YouTube WebView, so we can verify the parameter flowed through the
+        // adapter. We don't assert restoration-specific state here.
+        playerService.isPendingRestoredLoadDeferred = true
+        PlayerService.shared = playerService
+
+        let command = SeekCommand()
+        command.directParameter = 42 as NSNumber
+        _ = command.performDefaultImplementation()
+
+        let updated = await self.waitUntil { playerService.progress == 42 }
+        #expect(updated)
+        #expect(playerService.progress == 42)
+
+        PlayerService.shared = nil
+    }
+
+    @Test("Seek accepts floating-point parameters")
+    func seekAcceptsDoubleParameter() async {
+        let playerService = PlayerService()
+        // We use the deferred-restore early-return as a unit-test seam: it lets
+        // PlayerService.seek(to:) write `progress` synchronously without touching
+        // the YouTube WebView, so we can verify the parameter flowed through the
+        // adapter. We don't assert restoration-specific state here.
+        playerService.isPendingRestoredLoadDeferred = true
+        PlayerService.shared = playerService
+
+        let command = SeekCommand()
+        command.directParameter = 12.5 as NSNumber
+        _ = command.performDefaultImplementation()
+
+        let updated = await self.waitUntil { playerService.progress == 12.5 }
+        #expect(updated)
+        #expect(playerService.progress == 12.5)
+
+        PlayerService.shared = nil
+    }
 }
