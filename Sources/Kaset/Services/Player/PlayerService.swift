@@ -43,10 +43,22 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     // MARK: - Observable State
 
     /// Current playback state.
-    var state: PlaybackState = .idle
+    var state: PlaybackState = .idle {
+        didSet {
+            if oldValue != self.state {
+                self.notifyPlaybackStateChanged()
+            }
+        }
+    }
 
     /// Currently playing track.
-    var currentTrack: Song?
+    var currentTrack: Song? {
+        didSet {
+            if oldValue?.videoId != self.currentTrack?.videoId {
+                self.notifyTrackChanged()
+            }
+        }
+    }
 
     /// Artist-page episode backing the current playback, when applicable.
     var currentEpisode: ArtistEpisode?
@@ -128,7 +140,13 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     var shouldAutoResumeAfterRestoredLoad: Bool = false
 
     /// Like status of the current track.
-    var currentTrackLikeStatus: LikeStatus = .indifferent
+    var currentTrackLikeStatus: LikeStatus = .indifferent {
+        didSet {
+            if oldValue != self.currentTrackLikeStatus {
+                self.notifyLikeStatusChanged()
+            }
+        }
+    }
 
     /// Whether the current track is in the user's library.
     var currentTrackInLibrary: Bool = false
