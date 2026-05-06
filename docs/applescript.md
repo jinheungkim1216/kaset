@@ -143,3 +143,7 @@ tell application "Kaset"
     playpause
 end tell
 ```
+
+## See Also
+
+- [Distributed Notifications](distributed-notifications.md) — push-style player events for processes that want to react without polling.
