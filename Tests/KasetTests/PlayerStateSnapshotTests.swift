@@ -73,7 +73,9 @@ struct PlayerStateSnapshotTests {
             while service.repeatMode != .off {
                 service.cycleRepeatMode()
             }
-            for _ in 0..<i { service.cycleRepeatMode() }
+            for _ in 0 ..< i {
+                service.cycleRepeatMode()
+            }
             let dict = PlayerStateSnapshot.makePlayerInfoDictionary(from: service)
             #expect(dict["repeating"] as? String == expected, "after \(i) advances")
         }
