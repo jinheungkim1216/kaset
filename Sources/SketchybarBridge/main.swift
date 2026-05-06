@@ -14,11 +14,8 @@ private let sketchybarEventName = "kaset_update"
 private let debounceInterval: Duration = .milliseconds(100)
 
 private func logStderr(_ line: String) {
-    let stamp = ISO8601DateFormatter().string(from: Date())
-    let payload = "[\(stamp)] \(line)\n"
-    if let data = payload.data(using: .utf8) {
-        FileHandle.standardError.write(data)
-    }
+    let payload = "[\(Date.now.ISO8601Format())] \(line)\n"
+    FileHandle.standardError.write(Data(payload.utf8))
 }
 
 @Sendable private func runSketchybarTrigger() async {
@@ -28,6 +25,9 @@ private func logStderr(_ line: String) {
     do {
         try process.run()
         process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            logStderr("sketchybar exited with status \(process.terminationStatus) (is sketchybar installed and running?)")
+        }
     } catch {
         logStderr("failed to invoke sketchybar: \(error)")
     }
