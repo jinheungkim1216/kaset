@@ -6,6 +6,10 @@
 
 KASET_PLUGIN_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset"
 
+# Custom event the bridge daemon triggers — every kaset.* item subscribes
+# to it so they all refresh together on track / playback changes.
+sketchybar --add event kaset_update
+
 # Album art (background-image item; set by kaset_artwork.sh when track changes)
 sketchybar --add item kaset.artwork right \
            --set kaset.artwork \
@@ -17,7 +21,7 @@ sketchybar --add item kaset.artwork right \
 sketchybar --add item kaset.title right \
            --set kaset.title \
                  label.font="SF Pro:Semibold:13.0" \
-                 max_label_chars=30 \
+                 label.max_chars=30 \
                  padding_left=4 padding_right=8 \
            --subscribe kaset.title kaset_update
 
