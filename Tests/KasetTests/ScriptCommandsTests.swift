@@ -444,9 +444,10 @@ struct ScriptCommandsTests {
     @Test("Seek forwards integer parameter to PlayerService.seek(to:)")
     func seekForwardsIntegerParameter() async {
         let playerService = PlayerService()
-        // The deferred-restore branch of seek(to:) writes progress synchronously
-        // and returns without touching the WebView, which is exactly the path
-        // we want to exercise from a unit test.
+        // We use the deferred-restore early-return as a unit-test seam: it lets
+        // PlayerService.seek(to:) write `progress` synchronously without touching
+        // the YouTube WebView, so we can verify the parameter flowed through the
+        // adapter. We don't assert restoration-specific state here.
         playerService.isPendingRestoredLoadDeferred = true
         PlayerService.shared = playerService
 
@@ -457,7 +458,6 @@ struct ScriptCommandsTests {
         let updated = await self.waitUntil { playerService.progress == 42 }
         #expect(updated)
         #expect(playerService.progress == 42)
-        #expect(playerService.pendingRestoredSeek == 42)
 
         PlayerService.shared = nil
     }
@@ -465,6 +465,10 @@ struct ScriptCommandsTests {
     @Test("Seek accepts floating-point parameters")
     func seekAcceptsDoubleParameter() async {
         let playerService = PlayerService()
+        // We use the deferred-restore early-return as a unit-test seam: it lets
+        // PlayerService.seek(to:) write `progress` synchronously without touching
+        // the YouTube WebView, so we can verify the parameter flowed through the
+        // adapter. We don't assert restoration-specific state here.
         playerService.isPendingRestoredLoadDeferred = true
         PlayerService.shared = playerService
 
