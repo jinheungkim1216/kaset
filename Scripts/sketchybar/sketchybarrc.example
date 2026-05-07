@@ -6,14 +6,23 @@
 #
 # Visual layout (left → right of right group):
 #
-#   [artwork] [title] [progress] [time] [⏮] [▶] [⏭]
+#                 ┌── title ──┐
+#                 │           │
+#   [artwork]   info-item   [progress] [⏮] [▶] [⏭]
+#                 │           │
+#                 └── time ───┘
 #    │── album art ──│── navigation ──│── controls ──│
+#
+# `kaset.info` stacks the title and the position/duration label
+# vertically using a fixed `width` plus a negative `label.padding_left`
+# so the label re-overlaps the icon's horizontal range, with `y_offset`
+# pushing each onto its own row.
 #
 # SketchyBar's `right` anchor places earlier-added items closest to the
 # right edge, so the `--add` calls below run in *reverse* visual order:
 # next is added first (rightmost), artwork last (leftmost).
 
-KASET_PLUGIN_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset"
+KASET_PLUGIN_DIR="${KASET_PLUGIN_DIR:-${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset}"
 
 # Custom event the bridge daemon triggers — every kaset.* item subscribes
 # to it so they all refresh together on track / playback changes.
@@ -25,7 +34,7 @@ sketchybar --add item kaset.next right \
            --set kaset.next \
                  icon="⏭" \
                  click_script="$KASET_PLUGIN_DIR/kaset_next.sh" \
-                 padding_left=2 padding_right=2
+                 padding_left=0 padding_right=2
 
 # Play / pause button — also acts as the 1-Hz driver that re-fetches state.
 # Every other kaset.* item re-renders on the kaset_update event this
@@ -36,7 +45,7 @@ sketchybar --add item kaset.play_pause right \
                  click_script="$KASET_PLUGIN_DIR/kaset_play_pause.sh" \
                  script="$KASET_PLUGIN_DIR/kaset_update.sh" \
                  update_freq=1 \
-                 padding_left=2 padding_right=2 \
+                 padding_left=0 padding_right=0 \
            --subscribe kaset.play_pause kaset_update
 
 # Previous-track button
@@ -44,33 +53,50 @@ sketchybar --add item kaset.prev right \
            --set kaset.prev \
                  icon="⏮" \
                  click_script="$KASET_PLUGIN_DIR/kaset_prev.sh" \
-                 padding_left=2 padding_right=2
+                 padding_left=2 padding_right=0
 
 # ── Navigation (middle) ──────────────────────────────────────────────
-# Position / duration label, e.g. "1:23 / 3:45"
-sketchybar --add item kaset.time right \
-           --set kaset.time \
-                 label="—:— / —:—" \
-                 label.font="SF Mono:Regular:11.0" \
-                 padding_left=4 padding_right=8 \
-           --subscribe kaset.time kaset_update
-
 # Progress slider — clicking sets the target via kaset_seek.sh
 sketchybar --add slider kaset.progress right 100 \
            --set kaset.progress \
                  slider.percentage=0 \
                  slider.background.height=2 \
                  click_script="$KASET_PLUGIN_DIR/kaset_seek.sh" \
-                 padding_left=4 padding_right=4 \
+                 padding_left=2 padding_right=2 \
            --subscribe kaset.progress kaset_update
 
-# Track + artist label
-sketchybar --add item kaset.title right \
-           --set kaset.title \
-                 label.font="SF Pro:Semibold:13.0" \
-                 label.max_chars=30 \
-                 padding_left=4 padding_right=8 \
-           --subscribe kaset.title kaset_update
+# Stacked info item: title (top, via icon field) + time (bottom, via
+# label field). Both are pinned to width KASET_INFO_WIDTH with
+# `align=left`, and `label.padding_left=-KASET_INFO_WIDTH` slides
+# the time back so it overlaps the title's horizontal range; `y_offset`
+# then separates them onto two rows.
+#
+# `icon.scroll_duration > 0` (and `label.scroll_duration > 0`) makes
+# text marquee-scroll when it overflows the fixed width. Set to 0 to
+# disable and let SketchyBar truncate at the right edge instead.
+KASET_INFO_WIDTH=40
+sketchybar --add item kaset.info right \
+           --set kaset.info \
+                 scroll_texts=on \
+                 icon="—" \
+                 icon.font="SF Pro:Semibold:11.0" \
+                 icon.color=0xffffffff \
+                 icon.width="$KASET_INFO_WIDTH" \
+                 icon.align=left \
+                 icon.y_offset=7 \
+                 icon.padding_left=2 \
+                 icon.padding_right=0 \
+                 icon.scroll_duration=8000 \
+                 label="—:— / —:—" \
+                 label.font="SF Mono:Regular:9.0" \
+                 label.color=0xffaaaaaa \
+                 label.width="$KASET_INFO_WIDTH" \
+                 label.align=left \
+                 label.y_offset=-7 \
+                 label.padding_left="-$KASET_INFO_WIDTH" \
+                 label.padding_right=2 \
+                 label.scroll_duration=8000 \
+           --subscribe kaset.info kaset_update
 
 # ── Album art (leftmost on screen) ───────────────────────────────────
 sketchybar --add item kaset.artwork right \

@@ -60,8 +60,38 @@ else
     TITLE="$NAME"
 fi
 
-sketchybar --set kaset.title       label="$TITLE" \
-           --set kaset.time        label="$TIME_LABEL" \
+# Manual marquee: SketchyBar's native scroll_duration / scroll_texts
+# do not actually scroll in v2.23 (they only truncate). We rotate the
+# title one character per 1-Hz tick. Window size and tick increment are
+# tunable via env vars.
+KASET_MARQUEE_WINDOW="${KASET_MARQUEE_WINDOW:-10}"
+KASET_MARQUEE_STEP="${KASET_MARQUEE_STEP:-1}"
+MARQUEE_OFFSET_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-marquee-offset"
+
+DISPLAY_TITLE=$(python3 - "$TITLE" "$KASET_MARQUEE_WINDOW" "$KASET_MARQUEE_STEP" "$MARQUEE_OFFSET_FILE" <<'PY'
+import os, sys
+title, window, step, mfile = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+if len(title) <= window:
+    if os.path.exists(mfile):
+        try: os.remove(mfile)
+        except OSError: pass
+    print(title)
+else:
+    padded = title + "   •   "
+    n = len(padded)
+    offset = 0
+    if os.path.exists(mfile):
+        try: offset = int(open(mfile).read().strip()) % n
+        except (ValueError, OSError): pass
+    new_offset = (offset + step) % n
+    try: open(mfile, "w").write(str(new_offset))
+    except OSError: pass
+    doubled = padded + padded
+    print(doubled[offset:offset + window])
+PY
+)
+
+sketchybar --set kaset.info        icon="$DISPLAY_TITLE" label="$TIME_LABEL" \
            --set kaset.progress    slider.percentage="$PCT" \
            --set kaset.play_pause  icon="$PLAY_ICON"
 
