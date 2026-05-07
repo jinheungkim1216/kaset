@@ -28,6 +28,13 @@ KASET_PLUGIN_DIR="${KASET_PLUGIN_DIR:-${CONFIG_DIR:-$HOME/.config/sketchybar}/pl
 # to it so they all refresh together on track / playback changes.
 sketchybar --add event kaset_update
 
+# Sub-second marquee tick. The bridge daemon emits this at ~5 Hz so the
+# title scroll is smoother than `update_freq=1` allows. kaset.play_pause
+# (the script-bearing item) subscribes; the script's fast path branches
+# on $SENDER and rotates only kaset.info's icon, skipping the AppleScript
+# poll the full update path runs.
+sketchybar --add event kaset_marquee_tick
+
 # ── Controls (rightmost on screen) ───────────────────────────────────
 # Next-track button
 sketchybar --add item kaset.next right \
@@ -46,7 +53,7 @@ sketchybar --add item kaset.play_pause right \
                  script="$KASET_PLUGIN_DIR/kaset_update.sh" \
                  update_freq=1 \
                  padding_left=0 padding_right=0 \
-           --subscribe kaset.play_pause kaset_update
+           --subscribe kaset.play_pause kaset_update kaset_marquee_tick
 
 # Previous-track button
 sketchybar --add item kaset.prev right \
