@@ -106,10 +106,13 @@ sketchybar --add item kaset.info right \
            --subscribe kaset.info kaset_update
 
 # ── Album art (leftmost on screen) ───────────────────────────────────
+# Click brings the Kaset window forward (and launches it if not already
+# running) via AppleScript `activate`.
 sketchybar --add item kaset.artwork right \
            --set kaset.artwork \
                  background.image.scale=0.15 \
                  background.color=0x00000000 \
+                 click_script="$KASET_PLUGIN_DIR/kaset_activate.sh" \
                  padding_left=4 padding_right=4
 
 # ─── ASCII fallback icons ────────────────────────────────────────────
