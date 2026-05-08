@@ -6,6 +6,7 @@ set -euo pipefail
 
 BIN_DIR="$HOME/.local/bin"
 PLUGIN_DIR="$HOME/.config/sketchybar/plugins/kaset"
+ITEM_DIR="$HOME/.config/sketchybar/items/kaset"
 LAUNCHAGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCHAGENT_LABEL="app.kaset.sketchybar-bridge"
 LAUNCHAGENT_PLIST="$LAUNCHAGENT_DIR/${LAUNCHAGENT_LABEL}.plist"
@@ -19,6 +20,9 @@ rm -f "$BIN_DIR/kaset-sketchybar-bridge"
 
 echo "🧹 Removing plugin scripts…"
 rm -rf "$PLUGIN_DIR"
+
+echo "🧹 Removing item scripts…"
+rm -rf "$ITEM_DIR"
 
 cat <<'MSG'
 

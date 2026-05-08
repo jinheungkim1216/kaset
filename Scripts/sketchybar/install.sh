@@ -8,6 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN_DIR="$HOME/.local/bin"
 PLUGIN_DIR="$HOME/.config/sketchybar/plugins/kaset"
+ITEM_DIR="$HOME/.config/sketchybar/items/kaset"
 LOG_DIR="$HOME/.local/share/kaset"
 LAUNCHAGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCHAGENT_LABEL="app.kaset.sketchybar-bridge"
@@ -49,6 +50,16 @@ echo "📜 Installing plugins → $PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR"
 cp "$ROOT/Scripts/sketchybar/plugins/"*.sh "$PLUGIN_DIR/"
 chmod +x "$PLUGIN_DIR/"*.sh
+
+# ── Install item scripts ──────────────────────────────────────────────
+# Each item file is a small shell snippet that calls `sketchybar --add`
+# and `--set` for one logical item (title, progress, controls, …). The
+# entry point `sketchybarrc.example` sources them in reverse visual
+# order; users only need to source the example from their sketchybarrc.
+echo "📜 Installing items → $ITEM_DIR"
+mkdir -p "$ITEM_DIR"
+cp "$ROOT/Scripts/sketchybar/items/"*.sh "$ITEM_DIR/"
+chmod +x "$ITEM_DIR/"*.sh
 
 # ── Log dir ───────────────────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
