@@ -7,8 +7,8 @@
 #
 # `icon.scroll_duration > 0` (and `label.scroll_duration > 0`) is
 # requested for completeness, but SketchyBar v2.23 does not actually
-# scroll — the visible scrolling is driven manually by `kaset_update.sh`
-# in response to the `kaset_marquee_tick` event the bridge publishes.
+# scroll — the visible scrolling is driven by the kaset-sketchybar-
+# bridge daemon, which writes the icon directly at ~5 Hz.
 KASET_INFO_WIDTH="${KASET_INFO_WIDTH:-40}"
 
 sketchybar --add item kaset.info right \

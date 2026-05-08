@@ -29,15 +29,10 @@ KASET_ITEM_DIR="${KASET_ITEM_DIR:-$KASET_BASE_DIR/items}"
 KASET_PLUGIN_DIR="${KASET_PLUGIN_DIR:-$KASET_BASE_DIR/plugins}"
 
 # Custom event the bridge daemon triggers — kaset.* items subscribe
-# to it so they refresh together on track / playback changes.
+# to it so they refresh together on track / playback changes. Marquee
+# rotation is NOT an event: the bridge writes the title icon directly
+# at ~5 Hz to avoid re-spawning shell + python on every tick.
 sketchybar --add event kaset_update
-
-# Sub-second marquee tick. The bridge daemon emits this at ~5 Hz so the
-# title scroll is smoother than `update_freq=1` allows. kaset.play_pause
-# (the script-bearing item) subscribes; the script's fast path branches
-# on $SENDER and rotates only kaset.info's icon, skipping the AppleScript
-# poll the full update path runs.
-sketchybar --add event kaset_marquee_tick
 
 # Controls (rightmost on screen)
 source "$KASET_ITEM_DIR/kaset_next.sh"
