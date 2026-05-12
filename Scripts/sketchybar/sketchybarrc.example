@@ -1,55 +1,24 @@
+# Example ~/.config/sketchybar/sketchybarrc that pulls in the Kaset
+# widget. Drop this in (or merge the source line into your existing
+# rc) — every Kaset-specific knob lives inside kaset.sh, so the rc
+# stays free for your other widgets.
+
+# Your own bar / global settings go here, e.g.:
+#
+#   sketchybar --bar height=28 \
+#                    color=0xff1a1a1a
+#   sketchybar --default updates=when_shown
+
 # ─── Kaset music widget ──────────────────────────────────────────────
-# Source this from your sketchybarrc, or paste these lines into it.
-# Per-item configuration lives in $KASET_ITEM_DIR; the scripts items
-# call out to live in $KASET_PLUGIN_DIR. Both default to siblings of
-# this file, so sourcing the example straight from the repo "just
-# works"; an installed copy under ~/.config/sketchybar gets the same
-# defaults from the install layout.
+# To override visual knobs (fonts, colors, widths, icons), set them
+# *before* this source line — kaset.sh respects pre-set env vars.
 #
-# Visual layout (left → right of right group):
+#   KASET_INFO_WIDTH=80
+#   KASET_TITLE_COLOR=0xffff66cc
 #
-#                 ┌── title ──┐
-#                 │           │
-#   [artwork]   info-item   [progress] [⏮] [▶] [⏭]
-#                 │           │
-#                 └── time ───┘
-#    │── album art ──│── navigation ──│── controls ──│
-#
-# `kaset.info` stacks the title and the position/duration label
-# vertically using a fixed `width` plus a negative `label.padding_left`
-# so the label re-overlaps the icon's horizontal range, with `y_offset`
-# pushing each onto its own row.
-#
-# SketchyBar's `right` anchor places earlier-added items closest to the
-# right edge, so the items below are sourced in *reverse* visual order:
-# next first (rightmost), artwork last (leftmost).
+source "$HOME/.config/sketchybar/kaset/kaset.sh"
 
-KASET_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-KASET_ITEM_DIR="${KASET_ITEM_DIR:-$KASET_BASE_DIR/items}"
-KASET_PLUGIN_DIR="${KASET_PLUGIN_DIR:-$KASET_BASE_DIR/plugins}"
+# ─── Your other widgets / sources ───────────────────────────────────
+# source "$HOME/.config/sketchybar/some_other_widget.sh"
 
-# Custom event the bridge daemon triggers — kaset.* items subscribe
-# to it so they refresh together on track / playback changes. Marquee
-# rotation is NOT an event: the bridge writes the title icon directly
-# at ~5 Hz to avoid re-spawning shell + python on every tick.
-sketchybar --add event kaset_update
-
-# Controls (rightmost on screen)
-source "$KASET_ITEM_DIR/kaset_next.sh"
-source "$KASET_ITEM_DIR/kaset_play_pause.sh"
-source "$KASET_ITEM_DIR/kaset_prev.sh"
-
-# Navigation (middle)
-source "$KASET_ITEM_DIR/kaset_progress.sh"
-source "$KASET_ITEM_DIR/kaset_info.sh"
-
-# Album art (leftmost on screen)
-source "$KASET_ITEM_DIR/kaset_artwork.sh"
-
-# ─── ASCII fallback icons ────────────────────────────────────────────
-# If you don't have SF Pro / Unicode glyphs rendering well in SketchyBar,
-# override with:
-#   sketchybar --set kaset.prev       icon="<<"
-#   sketchybar --set kaset.next       icon=">>"
-#   export KASET_ICON_PLAY="|>"   # picked up by kaset_update.sh
-#   export KASET_ICON_PAUSE="||"
+sketchybar --update

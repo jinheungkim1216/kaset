@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Installs the kaset-sketchybar-bridge daemon and SketchyBar plugin
-# scripts. Builds the binary in release mode, copies files to standard
-# user locations, and registers the LaunchAgent so the bridge starts
-# at login.
+# Installs the kaset-sketchybar-bridge daemon and the self-contained
+# Kaset SketchyBar widget bundle. Builds the binary in release mode,
+# copies files to standard user locations, and registers the LaunchAgent
+# so the bridge starts at login.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN_DIR="$HOME/.local/bin"
-PLUGIN_DIR="$HOME/.config/sketchybar/plugins/kaset"
-ITEM_DIR="$HOME/.config/sketchybar/items/kaset"
+SKETCHYBAR_CONFIG_DIR="$HOME/.config/sketchybar"
+WIDGET_DIR="$SKETCHYBAR_CONFIG_DIR/kaset"
+ENTRY_POINT="$WIDGET_DIR/kaset.sh"
 LOG_DIR="$HOME/.local/share/kaset"
 LAUNCHAGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCHAGENT_LABEL="app.kaset.sketchybar-bridge"
@@ -45,21 +46,16 @@ mkdir -p "$BIN_DIR"
 cp ".build/release/kaset-sketchybar-bridge" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 
-# ── Install plugin scripts ────────────────────────────────────────────
-echo "📜 Installing plugins → $PLUGIN_DIR"
-mkdir -p "$PLUGIN_DIR"
-cp "$ROOT/Scripts/sketchybar/plugins/"*.sh "$PLUGIN_DIR/"
-chmod +x "$PLUGIN_DIR/"*.sh
-
-# ── Install item scripts ──────────────────────────────────────────────
-# Each item file is a small shell snippet that calls `sketchybar --add`
-# and `--set` for one logical item (title, progress, controls, …). The
-# entry point `sketchybarrc.example` sources them in reverse visual
-# order; users only need to source the example from their sketchybarrc.
-echo "📜 Installing items → $ITEM_DIR"
-mkdir -p "$ITEM_DIR"
-cp "$ROOT/Scripts/sketchybar/items/"*.sh "$ITEM_DIR/"
-chmod +x "$ITEM_DIR/"*.sh
+# ── Install widget bundle ─────────────────────────────────────────────
+# The whole self-contained bundle (entry point + items/ + plugins/ +
+# VERSION) gets copied as one directory. Users only ever need to source
+# $ENTRY_POINT from their sketchybarrc.
+WIDGET_VERSION="$(cat "$ROOT/Scripts/sketchybar/kaset/VERSION" 2>/dev/null || echo "unknown")"
+echo "📜 Installing widget bundle v$WIDGET_VERSION → $WIDGET_DIR"
+mkdir -p "$SKETCHYBAR_CONFIG_DIR"
+rm -rf "$WIDGET_DIR"
+cp -R "$ROOT/Scripts/sketchybar/kaset" "$WIDGET_DIR"
+chmod +x "$WIDGET_DIR/plugins/"*.sh
 
 # ── Log dir ───────────────────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
@@ -81,9 +77,10 @@ cat <<MSG
 ✅ Bridge installed.
 
 Next steps:
-  1. Add the kaset widget items to your sketchybarrc. Either:
-       source $ROOT/Scripts/sketchybar/sketchybarrc.example
-     or copy the contents into your sketchybarrc directly.
+  1. Add a single source line to your sketchybarrc:
+       source "$ENTRY_POINT"
+     (See $ROOT/Scripts/sketchybar/sketchybarrc.example for a
+     bare-bones rc that just pulls in the Kaset widget.)
   2. Reload SketchyBar: sketchybar --reload
 
 Logs:           tail -f $LOG_PATH

@@ -33,23 +33,35 @@ mode and:
 | What | Where |
 |---|---|
 | Bridge binary | `~/.local/bin/kaset-sketchybar-bridge` |
-| Plugin scripts | `~/.config/sketchybar/plugins/kaset/*.sh` |
+| Widget bundle | `~/.config/sketchybar/kaset/` |
+| ├ Entry point | `~/.config/sketchybar/kaset/kaset.sh` |
+| ├ Item scripts | `~/.config/sketchybar/kaset/items/*.sh` |
+| ├ Plugin scripts | `~/.config/sketchybar/kaset/plugins/*.sh` |
+| └ Version stamp | `~/.config/sketchybar/kaset/VERSION` |
 | LaunchAgent | `~/Library/LaunchAgents/app.kaset.sketchybar-bridge.plist` |
 | Logs | `~/.local/share/kaset/sketchybar-bridge.log` |
 
 The LaunchAgent is bootstrapped immediately and will auto-start on
 login.
 
-Then add the widget items to your `sketchybarrc`. Two equivalent
-options:
+Then add a single line to your existing `sketchybarrc` (so the Kaset
+widget can coexist with whatever else you already have):
 
 ```sh
-# Option A: source the example file directly
-echo 'source "$HOME/path/to/kaset/Scripts/sketchybar/sketchybarrc.example"' \
+echo 'source "$HOME/.config/sketchybar/kaset/kaset.sh"' \
   >> ~/.config/sketchybar/sketchybarrc
+```
 
-# Option B: paste the contents of sketchybarrc.example into your rc
-$EDITOR ~/.config/sketchybar/sketchybarrc
+`kaset.sh` is the only file you ever need to touch to restyle the
+widget — every font/color/width/icon knob is declared at the top of
+that file. The item and plugin scripts under `items/kaset/` and
+`plugins/kaset/` just consume those env vars.
+
+If you don't yet have a `sketchybarrc`, copy the bundled minimal
+example as a starting point:
+
+```sh
+cp ./Scripts/sketchybar/sketchybarrc.example ~/.config/sketchybar/sketchybarrc
 ```
 
 Reload SketchyBar:
@@ -105,26 +117,70 @@ for the command surface.
 
 ## Customization
 
-- **Position / order**: the example anchors items on `right`. Change
-  to `left` or `center` per item, or shuffle the `--add` order.
-- **Title length**: edit `max_label_chars=30` in `sketchybarrc.example`.
-- **Colors**: SketchyBar's standard `background.color`, `label.color`,
-  `icon.color` properties work on every item.
-- **ASCII fallback icons** (no SF Pro / Unicode glyphs registered):
-  ```sh
-  sketchybar --set kaset.prev icon="<<"
-  sketchybar --set kaset.next icon=">>"
-  export KASET_ICON_PLAY="|>"     # picked up by kaset_update.sh
-  export KASET_ICON_PAUSE="||"
-  ```
-- **Polling interval**: `kaset_update.sh` is wired to the
-  `play_pause` item with `update_freq=1`. Change that number to
-  decrease (=2 → every 2 seconds) or increase (=0 disables polling and
-  relies entirely on distributed notifications, which means the
-  progress bar won't advance between track changes).
+Every tunable lives in `~/.config/sketchybar/kaset/kaset.sh`. Edit the
+`Configuration` block at the top, then `sketchybar --reload`.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `KASET_INFO_WIDTH` | `40` | width of the stacked title / time column |
+| `KASET_INFO_Y_OFFSET` | `7` | vertical split between title and time |
+| `KASET_PROGRESS_WIDTH` | `100` | slider track length |
+| `KASET_PROGRESS_HEIGHT` | `2` | slider track thickness |
+| `KASET_ARTWORK_SCALE` | `0.15` | album art scale factor |
+| `KASET_UPDATE_FREQ` | `1` | seconds between AppleScript polls |
+| `KASET_TITLE_FONT` | `SF Pro:Semibold:11.0` | title typography |
+| `KASET_TIME_FONT` | `SF Mono:Regular:9.0` | time-label typography |
+| `KASET_TITLE_COLOR` | `0xffffffff` | title color (AARRGGBB) |
+| `KASET_TIME_COLOR` | `0xffaaaaaa` | time-label color |
+| `KASET_ICON_PREV` / `_NEXT` / `_PLAY` / `_PAUSE` | `⏮ ⏭ ▶ ⏸` | transport glyphs |
+| `KASET_MARQUEE_WINDOW` | `10` | visible characters of the marquee |
+| `KASET_MARQUEE_STEP` | `1` | characters scrolled per tick |
+| `KASET_DISPLAY` | (empty) | restrict widget to a monitor: empty = all, `active`, or display index (`1`, `2`, `1,3`, …). **Do not** pass `0` — sketchybar parses it as bit 0 and pins to display 1. |
+
+You can also override any of these **before** sourcing `kaset.sh` in
+your sketchybarrc:
+
+```sh
+KASET_INFO_WIDTH=80
+KASET_TITLE_COLOR=0xffff66cc
+KASET_DISPLAY=2     # only show on monitor 2 (sketchybar's display index)
+source "$HOME/.config/sketchybar/kaset/kaset.sh"
+```
+
+**Multi-monitor**: sketchybar enumerates displays left → right starting
+at `1`. `KASET_DISPLAY=active` follows whichever monitor your cursor /
+focused window is on; pass a fixed index to pin the widget to one
+monitor regardless of focus.
+
+**ASCII fallback icons** (no SF Pro / Unicode glyphs registered):
+
+```sh
+KASET_ICON_PREV="<<"
+KASET_ICON_NEXT=">>"
+KASET_ICON_PLAY="|>"
+KASET_ICON_PAUSE="||"
+source "$HOME/.config/sketchybar/kaset/kaset.sh"
+```
+
+For the runtime play/pause swap to also pick up new glyphs, export
+`KASET_ICON_PLAY` / `KASET_ICON_PAUSE` in sketchybar's *launch*
+environment (e.g. your shell rc), not just before the source line.
+
+**Position / order**: items anchor on `right` and are sourced in
+reverse visual order inside `kaset.sh`. Reorder the `source` lines, or
+change `--add item … right` to `left`/`center` inside the
+corresponding `kaset/items/*.sh`.
+
+**Polling interval `=0`** disables polling and relies entirely on
+distributed notifications — the progress bar won't advance between
+track changes.
 
 ## Troubleshooting
 
+- **Widget bundle version**: `cat ~/.config/sketchybar/kaset/VERSION`
+  (or `echo $KASET_WIDGET_VERSION` after sourcing the entry point).
+  Useful when you've vendored / copied the bundle and aren't sure
+  which version is live.
 - **Bridge log**: `tail -f ~/.local/share/kaset/sketchybar-bridge.log`.
   You should see a `ready, listening for 3 notifications` line shortly
   after login.
