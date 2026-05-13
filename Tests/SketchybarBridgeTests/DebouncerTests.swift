@@ -6,7 +6,9 @@ import Testing
 struct DebouncerTests {
     actor Counter {
         private(set) var value = 0
-        func increment() { self.value += 1 }
+        func increment() {
+            self.value += 1
+        }
     }
 
     @Test("Multiple rapid bumps within the window collapse to one action")
