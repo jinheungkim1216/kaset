@@ -89,6 +89,15 @@ them — see customization):
   to that position.
 - **Time** shows `current / total` in `M:SS`.
 
+## Visibility
+
+The widget hides itself automatically when Kaset.app isn't running and
+re-shows within ~1 s of launch. This is enforced inside the 1-Hz
+driver (`kaset_update.sh`) via `pgrep -x Kaset`, with the check
+sitting *before* any AppleScript call — otherwise `tell application
+"Kaset" to …` would auto-launch the app every tick, defeating the
+point of having closed it.
+
 ## How it works
 
 ```

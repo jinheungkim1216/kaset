@@ -5,10 +5,16 @@
 # daemon, which reads $TITLE_STASH_FILE 5x/sec and writes the icon
 # directly. This script just keeps the stash + offset files in sync
 # with the AppleScript-truth title.
+#
+# If Kaset.app is not running, this script hides the widget and bails
+# out *before* invoking AppleScript — `tell application "Kaset" to …`
+# would otherwise auto-launch Kaset, which is exactly what users who
+# closed it don't want.
 set -euo pipefail
 
-PLUGIN_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}/plugins/kaset"
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 LAST_VIDEO_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-last-video.txt"
+LAST_RUNNING_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-running.txt"
 TITLE_STASH_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-title.txt"
 MARQUEE_OFFSET_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-marquee-offset"
 
@@ -16,6 +22,42 @@ MARQUEE_OFFSET_FILE="${TMPDIR:-/tmp}/kaset-sketchybar-marquee-offset"
 # installed). At 1Hz, `command not found` would otherwise spam the log.
 command -v sketchybar >/dev/null 2>&1 || exit 0
 
+# ── Visibility gate ──────────────────────────────────────────────────
+# `pgrep -x` exact-matches the process name (Kaset.app's main binary).
+# Done BEFORE any AppleScript call so we don't auto-launch Kaset.
+if pgrep -x Kaset >/dev/null 2>&1; then
+    IS_RUNNING=1
+else
+    IS_RUNNING=0
+fi
+
+PREV_RUNNING=""
+if [[ -f "$LAST_RUNNING_FILE" ]]; then
+    PREV_RUNNING=$(cat "$LAST_RUNNING_FILE")
+fi
+
+if [[ "$IS_RUNNING" != "$PREV_RUNNING" ]]; then
+    printf '%s' "$IS_RUNNING" > "$LAST_RUNNING_FILE"
+    if [[ "$IS_RUNNING" == "1" ]]; then
+        DRAW=on
+    else
+        DRAW=off
+        # Drop the title stash so the bridge daemon stops rotating
+        # yesterday's track between now and when Kaset comes back.
+        rm -f "$TITLE_STASH_FILE" "$MARQUEE_OFFSET_FILE"
+    fi
+    sketchybar --set kaset.artwork    drawing="$DRAW" \
+               --set kaset.info       drawing="$DRAW" \
+               --set kaset.progress   drawing="$DRAW" \
+               --set kaset.prev       drawing="$DRAW" \
+               --set kaset.play_pause drawing="$DRAW" \
+               --set kaset.next       drawing="$DRAW"
+fi
+
+# Nothing to refresh while Kaset is closed.
+[[ "$IS_RUNNING" == "0" ]] && exit 0
+
+# ── Poll Kaset for the latest state ──────────────────────────────────
 INFO=$(osascript -e 'tell application "Kaset" to get player info' 2>/dev/null) || INFO='{}'
 
 # Validate JSON. `osascript` can exit 0 but emit a non-JSON string
