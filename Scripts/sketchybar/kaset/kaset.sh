@@ -43,6 +43,20 @@
 KASET_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 KASET_ITEM_DIR="${KASET_ITEM_DIR:-$KASET_BASE_DIR/items}"
 KASET_PLUGIN_DIR="${KASET_PLUGIN_DIR:-$KASET_BASE_DIR/plugins}"
+
+# Self-heal stale overrides — earlier widget layouts kept everything
+# flat under one directory, and users still have lines like
+# `KASET_PLUGIN_DIR="$CONFIG_DIR/kaset"` in their sketchybarrc. With
+# the new bundle layout that path points at the bundle root, not at
+# the plugins subdir, so click/script invocations end up at non-
+# existent paths. If the configured dir doesn't actually contain the
+# canonical update script, fall back to the sibling plugins/ dir.
+if [[ ! -f "$KASET_PLUGIN_DIR/kaset_update.sh" && -f "$KASET_BASE_DIR/plugins/kaset_update.sh" ]]; then
+    KASET_PLUGIN_DIR="$KASET_BASE_DIR/plugins"
+fi
+if [[ ! -f "$KASET_ITEM_DIR/kaset_info.sh" && -f "$KASET_BASE_DIR/items/kaset_info.sh" ]]; then
+    KASET_ITEM_DIR="$KASET_BASE_DIR/items"
+fi
 export KASET_ITEM_DIR KASET_PLUGIN_DIR
 
 # Bundle version — bump the VERSION file when shipping changes under
