@@ -4,6 +4,16 @@ A native macOS YouTube Music client built with Swift and SwiftUI.
 
 <img src="docs/screenshot.png" alt="Kaset Screenshot">
 
+## About this fork
+
+This is a personal fork of [sozercan/kaset](https://github.com/sozercan/kaset) that adds tiling-WM-friendly integrations on top of upstream. Differences vs upstream:
+
+- **[SketchyBar widget](docs/sketchybar.md)** — Now Playing widget for the macOS status bar (artwork, controls, click-to-seek progress), powered by a lightweight `sketchybar-bridge` daemon that converts player events into SketchyBar triggers.
+- **[Distributed Notifications](docs/distributed-notifications.md)** — push-style `NSDistributedNotificationCenter` events broadcast on player state changes, so external processes can react without polling AppleScript.
+- **`seek to N` AppleScript command** — seek to an absolute position in seconds (see [AppleScript docs](docs/applescript.md)).
+
+Upstream is periodically merged in; everything else mirrors sozercan/kaset.
+
 ## Features
 
 - 🎵 **Native macOS Experience** — Apple Music-style UI with Liquid Glass player bar and clean sidebar navigation
