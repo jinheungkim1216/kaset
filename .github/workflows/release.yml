@@ -336,7 +336,11 @@ jobs:
               $PRERELEASE_FLAG
           fi
 
+      # Homebrew tap + Sparkle appcast publishing only run on the upstream
+      # repository. Forks lack HOMEBREW_REPO_TOKEN / SPARKLE_PRIVATE_KEY and
+      # have no business pushing to sozercan/homebrew-repo, so skip.
       - name: Checkout Homebrew tap repo
+        if: github.repository == 'sozercan/kaset'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
         with:
           repository: sozercan/homebrew-repo
@@ -345,6 +349,7 @@ jobs:
           fetch-depth: 0
 
       - name: Update Homebrew Cask
+        if: github.repository == 'sozercan/kaset'
         run: |
           TAG="${{ steps.artifact.outputs.tag }}"
           VERSION="${TAG#v}"
@@ -387,6 +392,7 @@ jobs:
           git push origin main
 
       - name: Update Appcast
+        if: github.repository == 'sozercan/kaset'
         run: |
           # Fetch and checkout the default branch (we're in detached HEAD from tag checkout)
           git fetch origin ${{ github.event.repository.default_branch }}
