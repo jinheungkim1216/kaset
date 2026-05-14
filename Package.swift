@@ -18,6 +18,10 @@ let package = Package(
             name: "api-explorer",
             targets: ["APIExplorer"]
         ),
+        .executable(
+            name: "kaset-sketchybar-bridge",
+            targets: ["SketchybarBridge"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.1"),
@@ -52,6 +56,22 @@ let package = Package(
             resources: [
                 .process("Fixtures"),
             ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        // SketchyBar bridge daemon
+        .executableTarget(
+            name: "SketchybarBridge",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+            ]
+        ),
+        // Bridge daemon tests
+        .testTarget(
+            name: "SketchybarBridgeTests",
+            dependencies: ["SketchybarBridge"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
