@@ -285,17 +285,15 @@ ${APP_LOCALIZATIONS_PLIST}
         </dict>
     </array>
 
-    <!-- Sparkle Auto-Update Configuration -->
-    <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/sozercan/kaset/main/appcast.xml</string>
-    <key>SUPublicEDKey</key>
-    <string>qa2zoeXHqn+pluxQSGjn5HyIYA/iFtrEJz7S1BoslpI=</string>
+    <!-- Sparkle Auto-Update Configuration (disabled in this fork) -->
+    <!-- Upstream's SUFeedURL/SUPublicEDKey are intentionally omitted so the fork
+         doesn't poll upstream's appcast and prompt users to "update" to upstream
+         builds (which would erase fork-specific features). The "Check for
+         Updates" menu item still exists but will fail silently with no feed. -->
     <key>SUEnableAutomaticChecks</key>
-    <true/>
-    <key>SUScheduledCheckInterval</key>
-    <integer>86400</integer>
+    <false/>
     <key>SUAllowsAutomaticUpdates</key>
-    <true/>
+    <false/>
 
     <!-- AppleScript Support -->
     <key>NSAppleScriptEnabled</key>

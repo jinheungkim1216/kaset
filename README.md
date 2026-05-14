@@ -12,7 +12,13 @@ This is a personal fork of [sozercan/kaset](https://github.com/sozercan/kaset) t
 - **[Distributed Notifications](docs/distributed-notifications.md)** — push-style `NSDistributedNotificationCenter` events broadcast on player state changes, so external processes can react without polling AppleScript.
 - **`seek to N` AppleScript command** — seek to an absolute position in seconds (see [AppleScript docs](docs/applescript.md)).
 
-Upstream is periodically merged in; everything else mirrors sozercan/kaset.
+**Currently based on upstream `v0.9.0`.** Upstream is periodically merged in; everything else mirrors sozercan/kaset.
+
+### Updates
+
+Sparkle auto-update is **disabled** in this fork — pointing it at upstream's appcast would prompt users to "update" to upstream builds (which would erase the fork-specific features above), and maintaining a separately-signed appcast for a personal fork isn't worth the overhead. The "Check for Updates…" menu item still exists but does nothing.
+
+To update, check the [fork's Releases page](https://github.com/jinheungkim1216/kaset/releases) and install the newer DMG manually (replacing the existing `Kaset.app` in `/Applications`).
 
 ## Features
 
