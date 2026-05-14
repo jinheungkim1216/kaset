@@ -33,12 +33,14 @@ struct KasetApp: App {
     @State private var notificationService: NotificationService?
     @State private var updaterService = UpdaterService()
     @State private var favoritesManager = FavoritesManager.shared
+    @State private var sidebarPinnedItemsManager = SidebarPinnedItemsManager.shared
     @State private var likeStatusManager = SongLikeStatusManager.shared
     @State private var accountService: AccountService?
     @State private var scrobblingCoordinator: ScrobblingCoordinator
     @State private var syncedLyricsService: SyncedLyricsService
     @State private var equalizerService = EqualizerService.shared
     @State private var settings = SettingsManager.shared
+    @State private var podcastsAvailabilityService = PodcastsAvailabilityService()
 
     /// Triggers search field focus when set to true.
     @State private var searchFocusTrigger = false
@@ -126,11 +128,13 @@ struct KasetApp: App {
                     .environment(self.webKitManager)
                     .environment(self.playerService)
                     .environment(self.favoritesManager)
+                    .environment(self.sidebarPinnedItemsManager)
                     .environment(self.likeStatusManager)
                     .environment(self.accountService)
                     .environment(self.scrobblingCoordinator)
                     .environment(self.syncedLyricsService)
                     .environment(self.equalizerService)
+                    .environment(self.podcastsAvailabilityService)
                     .environment(\.searchFocusTrigger, self.$searchFocusTrigger)
                     .environment(\.navigationSelection, self.$navigationSelection)
                     .environment(\.showCommandBar, self.$showCommandBar)
