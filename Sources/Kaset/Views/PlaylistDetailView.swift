@@ -7,17 +7,20 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct PlaylistDetailView: View {
     let playlist: Playlist
+    let playerBarNavigationAction: PlayerBarNavigationAction
     @State var viewModel: PlaylistDetailViewModel
     @Environment(PlayerService.self) var playerService
+    @Environment(AuthService.self) private var authService
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SidebarPinnedItemsManager.self) var sidebarPinnedItemsManager: SidebarPinnedItemsManager?
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
-    @Environment(LibraryViewModel.self) var libraryViewModel: LibraryViewModel?
+    @Environment(\.libraryViewModel) var libraryViewModel: LibraryViewModel?
     @Environment(\.dismiss) var dismiss
-    /// Tracks whether this playlist has been added to library in this session.
-    @State var isAddedToLibrary: Bool = false
+    @Environment(\.onPlaylistDeleted) var onPlaylistDeleted
     /// Whether the refine playlist sheet is visible.
     @State var showRefineSheet: Bool = false
+    /// Whether an add/remove Library request is currently in flight.
+    @State var libraryMutationActivity = PlaylistDetailLibraryMutationActivity()
     /// AI-generated playlist changes.
     @State private var playlistChanges: PlaylistChanges?
     /// Partial playlist changes during streaming.
@@ -28,13 +31,32 @@ struct PlaylistDetailView: View {
     @State private var refineError: String?
     /// Computed property to check if playlist is in library.
     var isInLibrary: Bool {
-        self.libraryViewModel?.isInLibrary(playlistId: self.playlist.id) ?? false
+        if self.playlist.isAlbum {
+            return self.libraryViewModel?.isInLibrary(
+                albumId: self.playlist.id,
+                targetPlaylistId: self.viewModel.playlistDetail?.libraryTargetId
+            ) ?? false
+        }
+        return self.libraryViewModel?.isInLibrary(playlistId: self.playlist.id) ?? false
+    }
+
+    var isUpdatingLibrary: Bool {
+        self.libraryMutationActivity.isActive
+    }
+
+    var hasPersonalAccount: Bool {
+        self.authService.hasPersonalAccount
     }
 
     private let logger = DiagnosticsLogger.ai
 
-    init(playlist: Playlist, viewModel: PlaylistDetailViewModel) {
+    init(
+        playlist: Playlist,
+        viewModel: PlaylistDetailViewModel,
+        playerBarNavigationAction: PlayerBarNavigationAction = .disabled
+    ) {
         self.playlist = playlist
+        self.playerBarNavigationAction = playerBarNavigationAction
         _viewModel = State(initialValue: viewModel)
     }
 
@@ -69,20 +91,22 @@ struct PlaylistDetailView: View {
             if case .error = self.viewModel.loadingState {
             } else {
                 PlayerBar()
+                    .environment(\.playerBarNavigationAction, self.playerBarNavigationAction)
+                    .environment(\.playerBarCurrentAlbumID, self.playlist.isAlbum ? self.playlist.id : nil)
             }
         }
         .task {
-            if self.viewModel.loadingState == .idle {
-                await self.viewModel.load()
-            }
+            await self.viewModel.ensureLoaded()
         }
         .refreshable {
             await self.viewModel.refresh()
         }
-        .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
-            guard let event else { return }
-            guard LikedMusicPlaylist.matches(id: self.playlist.id) else { return }
-            self.viewModel.handleLikeStatusChange(event)
+        .onChange(of: self.likeStatusManager.lastLikeEventBatch) { _, batch in
+            guard let batch, batch.accountID == self.likeStatusManager.activeAccountID else { return }
+            for event in batch.events {
+                guard LikedMusicPlaylist.matches(id: self.playlist.id) else { return }
+                self.viewModel.handleLikeStatusChange(event)
+            }
         }
         .sheet(isPresented: self.$showRefineSheet) {
             if let detail = viewModel.playlistDetail {
@@ -129,15 +153,19 @@ struct PlaylistDetailView: View {
                     fallbackAlbum: fallbackAlbum
                 )
             }
-            .padding(24)
+            .padding(.vertical, 24)
         }
+        // Inset the resting content while the scroll view stays edge-to-edge so
+        // content extends under the floating glass sidebar; the accent backdrop
+        // (which ignores the safe area) refracts through it.
+        .contentMargins(.horizontal, DetailContentLayout.horizontalInset, for: .scrollContent)
         .topFade(style: .contentMask)
     }
 
     private func headerView(_ detail: PlaylistDetail) -> some View {
         HStack(alignment: .top, spacing: 20) {
             // Thumbnail
-            CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL, targetSize: CGSize(width: 180, height: 180)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -187,12 +215,19 @@ struct PlaylistDetailView: View {
         if !artists.isEmpty {
             HStack(spacing: 0) {
                 ForEach(Array(artists.enumerated()), id: \.offset) { index, artist in
-                    Text(artist.name)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    if artist.hasNavigableId {
+                        NavigationLink(value: artist) {
+                            HeaderArtistLinkLabel(name: artist.name)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(artist.name)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
 
                     if index < artists.count - 1 {
-                        Text(", ")
+                        Text(verbatim: ", ")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -263,6 +298,7 @@ struct PlaylistDetailView: View {
             index: index,
             isAlbum: isAlbum,
             subtitle: self.trackArtistsDisplay(for: track, fallbackAuthor: author),
+            allowsLikeActions: self.hasPersonalAccount,
             onPlay: {
                 self.playTrackInQueue(
                     tracks: tracks, startingAt: index, fallbackArtist: author,
@@ -368,27 +404,35 @@ struct PlaylistDetailView: View {
                     fallbackAlbum: fallbackAlbum
                 )
             } label: {
-                Label("Play", systemImage: "play.fill")
+                Label(String(localized: "Play"), systemImage: "play.fill")
             }
 
-            Divider()
+            if self.authService.hasPersonalAccount {
+                Divider()
 
-            FavoritesContextMenu.menuItem(for: track, manager: self.favoritesManager)
+                FavoritesContextMenu.menuItem(for: track, manager: self.favoritesManager)
 
-            Divider()
+                Divider()
 
-            LikeDislikeContextMenu(song: track, likeStatusManager: self.likeStatusManager)
+                LikeDislikeContextMenu(song: track, likeStatusManager: self.likeStatusManager)
+            }
 
             Divider()
 
             StartRadioContextMenu.menuItem(for: track, playerService: self.playerService)
 
-            Divider()
+            if self.authService.hasPersonalAccount {
+                Divider()
 
-            Button {
-                SongActionsHelper.addToLibrary(track, playerService: self.playerService)
-            } label: {
-                Label("Add to Library", systemImage: "plus.circle")
+                Button {
+                    SongActionsHelper.addToLibrary(track, playerService: self.playerService)
+                } label: {
+                    Label(String(localized: "Add to Library"), systemImage: "plus.circle")
+                }
+
+                Divider()
+
+                AddToPlaylistContextMenu(song: track, client: self.viewModel.client)
             }
 
             Divider()
@@ -401,13 +445,9 @@ struct PlaylistDetailView: View {
 
             Divider()
 
-            AddToPlaylistContextMenu(song: track, client: self.viewModel.client)
-
-            Divider()
-
             if let artist = track.artists.first(where: { $0.hasNavigableId }) {
                 NavigationLink(value: artist) {
-                    Label("Go to Artist", systemImage: "person")
+                    Label(String(localized: "Go to Artist"), systemImage: "person")
                 }
             }
 
@@ -421,10 +461,36 @@ struct PlaylistDetailView: View {
                     author: Artist.inline(name: album.artistsDisplay, namespace: "album-artist")
                 )
                 NavigationLink(value: playlist) {
-                    Label("Go to Album", systemImage: "square.stack")
+                    Label(String(localized: "Go to Album"), systemImage: "square.stack")
                 }
             }
         }
+
+        if self.canRemoveTrack(track) {
+            if track.isPlayable {
+                Divider()
+            }
+
+            Button(role: .destructive) {
+                Task {
+                    await LibraryMutationActions.removeSongFromPlaylist(track, from: self.viewModel, client: self.viewModel.client)
+                }
+            } label: {
+                Label(String(localized: "Remove from Playlist"), systemImage: "minus.circle")
+            }
+        }
+    }
+
+    /// Whether `track` can be removed from the currently loaded playlist: the user must
+    /// own the playlist (not an album, not the uploaded-songs surface), and the track
+    /// must carry the playlist-item identifier a removal call requires.
+    private func canRemoveTrack(_ track: Song) -> Bool {
+        guard let detail = self.viewModel.playlistDetail else { return false }
+        return !self.viewModel.isRemovingTrack
+            && detail.canDelete
+            && !detail.isAlbum
+            && !detail.isUploadedSongs
+            && track.playlistSetVideoId != nil
     }
 
     private func playTrackInQueue(
@@ -437,9 +503,10 @@ struct PlaylistDetailView: View {
         let cleanedTracks = self.playableTracks(
             tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum
         )
-        Task {
-            await self.playerService.playQueue(cleanedTracks, startingAt: playableIndex)
-        }
+        self.playAndLoadFullPlaylist(
+            initial: cleanedTracks, startingAt: playableIndex,
+            fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum
+        )
     }
 
     func playAll(
@@ -449,8 +516,48 @@ struct PlaylistDetailView: View {
             tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum
         )
         guard !cleanedTracks.isEmpty else { return }
-        Task {
-            await self.playerService.playQueue(cleanedTracks, startingAt: 0)
+        self.playAndLoadFullPlaylist(
+            initial: cleanedTracks, startingAt: 0,
+            fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum
+        )
+    }
+
+    /// Plays the currently-loaded tracks immediately, then — if the playlist is still loading —
+    /// grows the queue to the full set before Smart Shuffle generates suggestions, re-shuffling
+    /// the complete set when shuffling. Reuses the data the detail view is already paging.
+    private func playAndLoadFullPlaylist(
+        initial cleanedTracks: [Song], startingAt index: Int,
+        fallbackArtist: String?, fallbackAlbum: Album?
+    ) {
+        let intent = self.playerService.beginMusicPlaybackIntent()
+        Task { @MainActor in
+            let willDeferLoad = self.viewModel.hasMore
+            let loadGeneration = await self.playerService.playQueue(
+                cleanedTracks,
+                startingAt: index,
+                deferringSmartShuffleFill: willDeferLoad,
+                intent: intent
+            )
+            // Not deferring (playlist already fully loaded): playQueue filled suggestions itself.
+            guard let loadGeneration else { return }
+
+            await self.viewModel.loadAllRemaining()
+            await self.viewModel.waitForTrackRemovalToFinish()
+
+            // Stand down if a *different* playback superseded this load while it paged. (User edits
+            // such as removing a track keep the same load generation, so loading continues.)
+            guard self.playerService.isCurrentQueueLoad(loadGeneration) else { return }
+
+            let fullTracks = self.playableTracks(
+                self.viewModel.playlistDetail?.tracks ?? [],
+                fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum
+            )
+            let remaining = PlaylistPlaybackActions.remainingTracks(
+                after: cleanedTracks,
+                in: fullTracks
+            )
+            self.playerService.appendOriginalTracks(remaining)
+            await self.playerService.endQueueLoading(loadGeneration)
         }
     }
 
@@ -469,7 +576,9 @@ struct PlaylistDetailView: View {
     {
         tracks.map { song in
             var cleanedArtists = song.artists.compactMap { artist -> Artist? in
-                if artist.name == "Album" { return nil }
+                if artist.name == "Album" {
+                    return nil
+                }
                 var cleanName = artist.name
                 if cleanName.hasPrefix("Album, ") {
                     cleanName = String(cleanName.dropFirst(7))
@@ -514,30 +623,9 @@ struct PlaylistDetailView: View {
                 duration: song.duration,
                 thumbnailURL: finalThumbnail,
                 videoId: song.videoId,
-                isPlayable: song.isPlayable
+                isPlayable: song.isPlayable,
+                playlistSetVideoId: song.playlistSetVideoId
             )
-        }
-    }
-
-    func toggleLibrary() {
-        let currentlyInLibrary = self.isInLibrary || self.isAddedToLibrary
-        HapticService.success()
-        Task {
-            if currentlyInLibrary {
-                await SongActionsHelper.removePlaylistFromLibrary(
-                    self.playlist,
-                    client: self.viewModel.client,
-                    libraryViewModel: self.libraryViewModel
-                )
-                self.isAddedToLibrary = false
-            } else {
-                await SongActionsHelper.addPlaylistToLibrary(
-                    self.playlist,
-                    client: self.viewModel.client,
-                    libraryViewModel: self.libraryViewModel
-                )
-                self.isAddedToLibrary = true
-            }
         }
     }
 
@@ -660,6 +748,7 @@ private struct PlaylistTrackRow<Menu: View>: View {
     let index: Int
     let isAlbum: Bool
     let subtitle: String?
+    let allowsLikeActions: Bool
     let onPlay: () -> Void
     @ViewBuilder let menu: () -> Menu
 
@@ -683,7 +772,7 @@ private struct PlaylistTrackRow<Menu: View>: View {
                 .frame(width: 28, alignment: .trailing)
 
                 if !self.isAlbum {
-                    CachedAsyncImage(url: self.track.thumbnailURL) { image in
+                    CachedAsyncImage(url: self.track.thumbnailURL, targetSize: CGSize(width: 40, height: 40)) { image in
                         image.resizable().aspectRatio(contentMode: .fill)
                     } placeholder: {
                         Rectangle().fill(.quaternary)
@@ -711,7 +800,7 @@ private struct PlaylistTrackRow<Menu: View>: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                LikeButton(song: self.track, isRowHovered: self.isHovered)
+                LikeButton(song: self.track, isRowHovered: self.isHovered, allowsActions: self.allowsLikeActions)
 
                 Text(self.track.durationDisplay)
                     .font(.system(size: 12))
@@ -751,6 +840,25 @@ private struct HoverUnderlineNavigationLink<Value: Hashable>: View {
     }
 }
 
+// MARK: - HeaderArtistLinkLabel
+
+private struct HeaderArtistLinkLabel: View {
+    let name: String
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Text(self.name)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(self.isHovering ? .primary : .secondary)
+            .animation(.easeInOut(duration: 0.15), value: self.isHovering)
+            .onHover { hovering in
+                self.isHovering = hovering
+            }
+    }
+}
+
+@available(macOS 26.0, *)
 #Preview {
     let playlist = Playlist(
         id: "test",

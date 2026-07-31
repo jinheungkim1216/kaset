@@ -314,6 +314,105 @@ final class DislikeTrackCommand: NSScriptCommand {
     }
 }
 
+// MARK: - GetPlayQueueCommand
+
+/// GetPlayQueue command: returns the current playback queue and active index as JSON.
+/// This is a synchronous operation that returns immediately.
+@objc(KasetGetPlayQueueCommand)
+final class GetPlayQueueCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        let result = MainActor.assumeIsolated { () -> String in
+            guard let playerService = getPlayerService() else {
+                logger.error("GetPlayQueue command failed: PlayerService.shared is nil")
+                return "{\"error\": \"Player not available\"}"
+            }
+
+            logger.info("Executing getPlayQueue command")
+
+            let tracks = playerService.queue.map { track -> [String: Any] in
+                [
+                    "name": track.title,
+                    "artist": track.artistsDisplay,
+                    "album": track.album?.title ?? "",
+                    "duration": track.duration ?? 0,
+                    "videoId": track.videoId,
+                    "artworkURL": track.thumbnailURL?.absoluteString ?? "",
+                ]
+            }
+
+            let info: [String: Any] = [
+                "currentIndex": playerService.activePlaybackQueueIndex.map { $0 + 1 } ?? 0,
+                "tracks": tracks,
+            ]
+
+            if let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]),
+               let json = String(data: data, encoding: .utf8)
+            {
+                return json
+            }
+
+            logger.error("GetPlayQueue command failed: JSON serialization error")
+            return "{}"
+        }
+
+        if result.hasPrefix("{\"error\"") {
+            self.scriptErrorNumber = errPlayerNotAvailable
+            self.scriptErrorString = playerNotAvailableMessage
+        }
+
+        return result
+    }
+}
+
+// MARK: - PlayTrackAtIndexCommand
+
+/// PlayTrackAtIndex command: plays a specific track from the queue by its 1-based index.
+@objc(KasetPlayTrackAtIndexCommand)
+final class PlayTrackAtIndexCommand: NSScriptCommand {
+    override func performDefaultImplementation() -> Any? {
+        guard let indexValue = self.directParameter as? Int else {
+            logger.error("PlayTrackAtIndex command failed: invalid index parameter")
+            self.scriptErrorNumber = errAECoercionFail
+            self.scriptErrorString = "Track index must be an integer."
+            return nil
+        }
+
+        guard let playerService = MainActor.assumeIsolated({ getPlayerService() }) else {
+            logger.error("PlayTrackAtIndex command failed: PlayerService.shared is nil")
+            self.scriptErrorNumber = errPlayerNotAvailable
+            self.scriptErrorString = playerNotAvailableMessage
+            return nil
+        }
+
+        let queueCount = MainActor.assumeIsolated { playerService.queueEntries.count }
+
+        // Convert 1-based AppleScript index to 0-based Swift index
+        let zeroBasedIndex = indexValue - 1
+
+        guard zeroBasedIndex >= 0, zeroBasedIndex < queueCount else {
+            logger.error("PlayTrackAtIndex command failed: index \(indexValue) out of bounds (1..\(queueCount))")
+            self.scriptErrorNumber = -1728 // errAENoSuchObject
+            self.scriptErrorString = "Index out of bounds. The queue contains \(queueCount) tracks."
+            return nil
+        }
+
+        let selection = MainActor.assumeIsolated { () -> (UUID, MusicPlaybackReservation)? in
+            guard let entryID = playerService.queueEntries[safe: zeroBasedIndex]?.id else { return nil }
+            return (entryID, playerService.reserveMusicPlaybackIntent())
+        }
+        guard let (entryID, reservation) = selection else { return nil }
+        logger.info("Executing playTrackAtIndex command with index: \(indexValue)")
+        Task { @MainActor in
+            guard let intent = playerService.claimMusicPlaybackIntent(
+                reservation,
+                queueEntryID: entryID
+            ) else { return }
+            await playerService.playFromQueue(entryID: entryID, intent: intent)
+        }
+        return nil
+    }
+}
+
 // MARK: - SeekCommand
 
 /// Seek command: jumps the current track to a specific position in seconds.

@@ -21,6 +21,9 @@ protocol WebKitManagerProtocol: AnyObject, Sendable {
     /// Checks if the required authentication cookies exist.
     func hasAuthCookies() async -> Bool
 
+    /// Clears only authentication cookies from WebKit and persisted storage.
+    func clearAuthCookies() async
+
     /// Clears all website data (cookies, cache, etc.).
     func clearAllData() async
 
@@ -32,6 +35,11 @@ protocol WebKitManagerProtocol: AnyObject, Sendable {
 
     /// Logs all authentication-related cookies for debugging.
     func logAuthCookies() async
+
+    /// Switches the shared session's active delegated identity to the account
+    /// reached by `signinURL`, verifying via `ytcfg.DATASYNC_ID`. Throws if the
+    /// switch cannot be verified.
+    func switchSessionIdentity(to signinURL: URL, expectedBrandId: String?) async throws
 }
 
 // MARK: - YTMusicClientProtocol
@@ -127,11 +135,17 @@ protocol YTMusicClientProtocol: Sendable {
     /// Searches for songs only with pagination support.
     func searchSongsWithPagination(query: String) async throws -> SearchResponse
 
+    /// Searches for videos only (filtered search with pagination).
+    func searchVideos(query: String) async throws -> SearchResponse
+
     /// Searches for albums only (filtered search with pagination).
     func searchAlbums(query: String) async throws -> SearchResponse
 
     /// Searches for artists only (filtered search with pagination).
     func searchArtists(query: String) async throws -> SearchResponse
+
+    /// Searches for profiles only (filtered search with pagination).
+    func searchProfiles(query: String) async throws -> SearchResponse
 
     /// Searches for playlists only (filtered search with pagination).
     func searchPlaylists(query: String) async throws -> SearchResponse
@@ -145,15 +159,11 @@ protocol YTMusicClientProtocol: Sendable {
     /// Searches for podcasts only (podcast shows).
     func searchPodcasts(query: String) async throws -> SearchResponse
 
-    /// Fetches the next batch of search results via continuation.
-    /// Returns nil if no more results are available.
-    func getSearchContinuation() async throws -> SearchResponse?
+    /// Searches for podcast episodes only (filtered search with pagination).
+    func searchEpisodes(query: String) async throws -> SearchResponse
 
-    /// Whether more search results are available to load.
-    var hasMoreSearchResults: Bool { get }
-
-    /// Clears the search continuation token.
-    func clearSearchContinuation()
+    /// Fetches the next batch of search results for an explicit continuation value.
+    func getSearchContinuation(token: String) async throws -> SearchResponse
 
     /// Clears cached continuation/session state when switching accounts.
     func resetSessionStateForAccountSwitch()
@@ -185,7 +195,7 @@ protocol YTMusicClientProtocol: Sendable {
     func getPlaylistAllTracks(playlistId: String) async throws -> [Song]
 
     /// Fetches a batch of playlist tracks using the provided continuation token.
-    func getPlaylistContinuation(token: String) async throws -> PlaylistContinuationResponse
+    func getPlaylistContinuation(token: String, requiresAuth: Bool) async throws -> PlaylistContinuationResponse
 
     /// Fetches artist details including their songs and albums.
     func getArtist(id: String) async throws -> ArtistDetail
@@ -221,6 +231,11 @@ protocol YTMusicClientProtocol: Sendable {
 
     /// Adds a song to an existing playlist.
     func addSongToPlaylist(videoId: String, playlistId: String, allowDuplicate: Bool) async throws
+
+    /// Removes a song from a playlist.
+    /// - Parameter setVideoId: The playlist-item-specific identifier (from `Song.playlistSetVideoId`)
+    ///   identifying which occurrence of the song to remove.
+    func removeSongFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws
 
     /// Creates a playlist and optionally seeds it with songs.
     func createPlaylist(
@@ -277,7 +292,19 @@ protocol YTMusicClientProtocol: Sendable {
 
     /// Fetches the list of available accounts (primary + brand accounts).
     /// Used for account switching functionality.
-    func fetchAccountsList() async throws -> AccountsListResponse
+    func fetchAccountsList(allowGuestMode: Bool) async throws -> AccountsListResponse
+}
+
+extension YTMusicClientProtocol {
+    /// Fetches accounts using normal personal-mode authentication.
+    func fetchAccountsList() async throws -> AccountsListResponse {
+        try await self.fetchAccountsList(allowGuestMode: false)
+    }
+
+    /// Fetches a public playlist continuation by default.
+    func getPlaylistContinuation(token: String) async throws -> PlaylistContinuationResponse {
+        try await self.getPlaylistContinuation(token: token, requiresAuth: false)
+    }
 }
 
 // MARK: - AuthServiceProtocol
@@ -304,8 +331,8 @@ protocol AuthServiceProtocol: AnyObject, Sendable {
     /// Signs out the user by clearing all cookies and data.
     func signOut() async
 
-    /// Called when login completes successfully.
-    func completeLogin(sapisid: String)
+    /// Called when login completes successfully and account-scoped work has drained.
+    func completeLoginAfterDraining(sapisid: String) async
 }
 
 // MARK: - PlayerServiceProtocol
@@ -344,11 +371,26 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
     /// Playback queue.
     var queue: [Song] { get }
 
-    /// Index of current track in queue.
+    /// Queue cursor used for next/previous navigation.
     var currentIndex: Int { get }
+
+    /// Index of the queue entry that actually owns playback, or nil for detached playback.
+    var activePlaybackQueueIndex: Int? { get }
 
     /// Whether the mini player should be shown.
     var showMiniPlayer: Bool { get set }
+
+    /// Whether the native mini player window is visible.
+    var isMiniPlayerVisible: Bool { get set }
+
+    /// How the native mini player was opened.
+    var miniPlayerMode: PlayerService.MiniPlayerMode { get set }
+
+    /// Active native mini player layout.
+    var miniPlayerPanel: PlayerService.MiniPlayerPanel { get set }
+
+    /// Whether closing the mini player should restore the main window.
+    var shouldRestoreMainWindowWhenMiniPlayerCloses: Bool { get set }
 
     /// Like status of the current track.
     var currentTrackLikeStatus: LikeStatus { get }
@@ -394,11 +436,55 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
     /// Cycles through repeat modes.
     func cycleRepeatMode()
 
+    /// Opens the native mini player.
+    func openMiniPlayer(mode: PlayerService.MiniPlayerMode)
+
+    /// Toggles the native mini player.
+    @discardableResult
+    func toggleMiniPlayer(mode: PlayerService.MiniPlayerMode) -> Bool
+
+    /// Closes the native mini player.
+    @discardableResult
+    func closeMiniPlayer() -> Bool
+
+    /// Consumes a pending request to restore the main app window.
+    func consumeMiniPlayerMainWindowRestoreRequest() -> Bool
+
+    /// Toggles compact/expanded native mini player layout.
+    func toggleMiniPlayerPanel()
+
     /// Stops playback and clears state.
     func stop() async
 
+    /// Reserves native playback ownership without changing the current intent.
+    func reserveMusicPlaybackIntent() -> MusicPlaybackReservation
+
+    /// Claims a reservation only if no newer playback intent has superseded it.
+    func claimMusicPlaybackIntent(_ reservation: MusicPlaybackReservation) -> MusicPlaybackIntent?
+
+    /// Whether an unclaimed reservation still names the current playback context.
+    func acceptsMusicPlaybackReservation(_ reservation: MusicPlaybackReservation) -> Bool
+
+    /// Captures the queue context for queue-only deferred mutations.
+    func reserveQueueMutation() -> Int
+
+    /// Whether a queue-only mutation still targets the same queue context.
+    func acceptsQueueMutation(_ generation: Int) -> Bool
+
+    /// Whether the supplied native playback intent still owns mutations.
+    func acceptsMusicPlaybackIntent(_ intent: MusicPlaybackIntent) -> Bool
+
     /// Plays a queue of songs starting at the specified index.
     func playQueue(_ songs: [Song], startingAt index: Int) async
+
+    /// Conditionally plays a queue under a previously claimed native intent.
+    @discardableResult
+    func playQueue(
+        _ songs: [Song],
+        startingAt index: Int,
+        deferringSmartShuffleFill: Bool,
+        intent: MusicPlaybackIntent
+    ) async -> Int?
 
     /// Plays a song and fetches similar songs (radio queue) in the background.
     /// The queue will be populated with similar songs from YouTube Music's radio feature.
@@ -409,7 +495,11 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
     /// - Parameters:
     ///   - playlistId: The mix playlist ID (e.g., "RDEM...")
     ///   - startVideoId: Optional starting video ID
-    func playWithMix(playlistId: String, startVideoId: String?) async
+    func playWithMix(
+        playlistId: String,
+        startVideoId: String?,
+        intent: MusicPlaybackIntent?
+    ) async
 
     /// Clears the queue while preserving the current track when possible.
     func clearQueue()
@@ -447,4 +537,14 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
 
     /// Updates the like status from WebView observation.
     func updateLikeStatus(_ status: LikeStatus)
+}
+
+extension PlayerServiceProtocol {
+    func playWithMix(playlistId: String, startVideoId: String?) async {
+        await self.playWithMix(
+            playlistId: playlistId,
+            startVideoId: startVideoId,
+            intent: nil
+        )
+    }
 }

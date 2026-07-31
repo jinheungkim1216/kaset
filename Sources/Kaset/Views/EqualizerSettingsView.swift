@@ -5,7 +5,6 @@ import SwiftUI
 /// Settings tab for the equalizer, styled after Spotify's mobile EQ:
 /// a curve overlay riding on top of six vertical band sliders, a preset
 /// picker, a preamp slider, and a master toggle.
-@available(macOS 26.0, *)
 struct EqualizerSettingsView: View {
     @Environment(EqualizerService.self) private var service
 
@@ -55,21 +54,29 @@ struct EqualizerSettingsView: View {
         Form {
             Section {
                 Toggle("Enable Equalizer", isOn: self.isEnabled)
-                    .help("Processes Kaset's audio output through a 6-band equalizer.")
+                    .help(String(localized: "Processes Kaset's audio output through a 6-band equalizer."))
 
                 EQStatusRow(status: self.service.status)
 
-                Picker("Preset", selection: self.preset) {
+                HStack {
+                    Spacer()
+                    Button(String(localized: "Reset")) {
+                        self.service.reset()
+                    }
+                    .disabled(!self.service.settings.isEnabled)
+                }
+            } header: {
+                Text(String(localized: "Output"))
+            }
+
+            Section {
+                Picker(String(localized: "Preset"), selection: self.preset) {
                     ForEach(self.availablePresets) { preset in
                         Text(preset.displayName).tag(preset)
                     }
                 }
                 .disabled(!self.service.settings.isEnabled)
-            } header: {
-                Text("Equalizer")
-            }
 
-            Section {
                 EQCurveAndSlidersView(
                     bands: self.bands,
                     gains: self.service.settings.bandGainsDB,
@@ -82,12 +89,12 @@ struct EqualizerSettingsView: View {
                 .opacity(self.service.settings.isEnabled ? 1 : 0.45)
                 .animation(.easeInOut(duration: 0.2), value: self.service.settings.isEnabled)
             } header: {
-                Text("Bands")
+                Text(String(localized: "Bands"))
             }
 
             Section {
                 HStack {
-                    Text("Preamp")
+                    Text(String(localized: "Preamp"))
                     Spacer()
                     Text(Self.formatGain(self.service.settings.preampDB))
                         .font(.caption.monospacedDigit())
@@ -100,16 +107,8 @@ struct EqualizerSettingsView: View {
                     step: 0.5
                 )
                 .disabled(!self.service.settings.isEnabled)
-
-                HStack {
-                    Spacer()
-                    Button("Reset") {
-                        self.service.reset()
-                    }
-                    .disabled(!self.service.settings.isEnabled)
-                }
             } header: {
-                Text("Preamp")
+                Text(String(localized: "Preamp"))
             }
         }
         .formStyle(.grouped)
@@ -132,7 +131,6 @@ struct EqualizerSettingsView: View {
 /// When the failure suggests a permission denial, a deep-link button
 /// opens System Settings → Privacy & Security → Screen & System Audio
 /// Recording directly.
-@available(macOS 26.0, *)
 private struct EQStatusRow: View {
     let status: EqualizerService.Status
 
@@ -163,7 +161,7 @@ private struct EQStatusRow: View {
 
             if self.showsSettingsLink, let url = Self.screenRecordingPaneURL {
                 Link(destination: url) {
-                    Text("Open Settings")
+                    Text(String(localized: "Open Settings"))
                 }
                 .controlSize(.small)
             }
@@ -217,7 +215,9 @@ private struct EQStatusRow: View {
     }
 
     private var showsSettingsLink: Bool {
-        if case .permissionNeeded = self.status { return true }
+        if case .permissionNeeded = self.status {
+            return true
+        }
         return false
     }
 }
@@ -226,7 +226,6 @@ private struct EQStatusRow: View {
 
 /// The visual heart of the EQ tab: a frequency-response curve drawn over a
 /// row of vertical band sliders.
-@available(macOS 26.0, *)
 private struct EQCurveAndSlidersView: View {
     let bands: [EQBand]
     let gains: [Float]
@@ -269,7 +268,6 @@ private struct EQCurveAndSlidersView: View {
 
 /// Single band: vertical slider with frequency label below and live-updating
 /// gain label above.
-@available(macOS 26.0, *)
 private struct EQBandSlider: View {
     let band: EQBand
     @Binding var gain: Float
@@ -291,7 +289,7 @@ private struct EQBandSlider: View {
             Text(self.band.displayLabel)
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
-            Text("Hz")
+            Text(String(localized: "Hz"))
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
         }

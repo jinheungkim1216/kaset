@@ -1,3 +1,5 @@
+// swiftlint:disable file_length
+
 import Foundation
 import Testing
 @testable import Kaset
@@ -101,17 +103,77 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.currentIndex == 1)
     }
 
-    @Test("Remove from queue by entry ID removes only the targeted duplicate")
-    func removeFromQueueByEntryIDRemovesSingleDuplicate() async throws {
+    @Test("Remove from queue at index removes only the targeted duplicate")
+    func removeFromQueueAtIndexRemovesSingleDuplicate() async throws {
         let duplicateSong = TestFixtures.makeSong(id: "dup", title: "Duplicate Song")
         await self.playerService.playQueue([duplicateSong, duplicateSong, TestFixtures.makeSong(id: "other")], startingAt: 0)
         let secondEntryID = try #require(self.playerService.queueEntryIDs[safe: 1])
 
-        self.playerService.removeFromQueue(entryIDs: Set([secondEntryID]))
+        self.playerService.removeFromQueue(at: 1)
 
         #expect(self.playerService.queue.count == 2)
         #expect(self.playerService.queue.count(where: { $0.videoId == "dup" }) == 1)
         #expect(!self.playerService.queueEntryIDs.contains(secondEntryID))
+    }
+
+    @Test("Remove queue entries clamps current index after removing current entry")
+    func removeFromQueueEntryIDsClampsCurrentIndexAfterRemovingCurrentEntry() async {
+        let songs = TestFixtures.makeSongs(count: 4)
+        await self.playerService.playQueue(songs, startingAt: 2)
+        let entryIDs = self.playerService.queueEntryIDs
+
+        self.playerService.removeFromQueue(entryIDs: Set(entryIDs[1 ... 3]))
+
+        #expect(self.playerService.queue.map(\.videoId) == ["video-0"])
+        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.currentQueueEntryID == entryIDs[0])
+    }
+
+    @Test("Remove songs by video ID clamps current index after removing current song")
+    func removeFromQueueVideoIDsClampsCurrentIndexAfterRemovingCurrentSong() async {
+        let songs = TestFixtures.makeSongs(count: 4)
+        await self.playerService.playQueue(songs, startingAt: 2)
+
+        self.playerService.removeFromQueue(videoIds: Set(["video-1", "video-2", "video-3"]))
+
+        #expect(self.playerService.queue.map(\.videoId) == ["video-0"])
+        #expect(self.playerService.currentIndex == 0)
+    }
+
+    @Test("Remove duplicate queue entries retains the active occurrence at the first video position")
+    func removeDuplicateQueueEntriesRetainsActiveOccurrence() async throws {
+        let duplicateSong = TestFixtures.makeSong(id: "dup", title: "Duplicate Song")
+        let otherSong = TestFixtures.makeSong(id: "other", title: "Other Song")
+        await self.playerService.playQueue([duplicateSong, otherSong, duplicateSong, duplicateSong], startingAt: 2)
+        let activeDuplicateEntryID = try #require(self.playerService.activePlaybackQueueEntryID)
+        let endingOccurrence = self.playerService.currentMusicPlaybackOccurrence
+
+        self.playerService.removeDuplicateQueueEntries()
+
+        #expect(self.playerService.queue.count == 2)
+        #expect(self.playerService.queue.map(\.videoId) == ["dup", "other"])
+        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.currentQueueEntryID == activeDuplicateEntryID)
+        #expect(self.playerService.activePlaybackQueueEntryID == activeDuplicateEntryID)
+
+        await self.playerService.handleTrackEnded(
+            observedVideoId: duplicateSong.videoId,
+            playbackOccurrence: endingOccurrence
+        )
+        #expect(self.playerService.currentIndex == 1)
+        #expect(self.playerService.currentTrack?.videoId == otherSong.videoId)
+    }
+
+    @Test("queueHasDuplicateEntries reflects duplicate video IDs")
+    func queueHasDuplicateEntries() async {
+        let duplicateSong = TestFixtures.makeSong(id: "dup", title: "Duplicate Song")
+        await self.playerService.playQueue([duplicateSong, duplicateSong], startingAt: 0)
+
+        #expect(self.playerService.queueHasDuplicateEntries == true)
+
+        self.playerService.removeDuplicateQueueEntries()
+
+        #expect(self.playerService.queueHasDuplicateEntries == false)
     }
 
     @Test("Reorder queue keeps current duplicate entry selected")
@@ -173,7 +235,7 @@ struct PlayerServiceQueueTests {
         self.playerService.clearQueue()
         #expect(self.playerService.queue.count == 1)
 
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
 
         // Assert
         #expect(self.playerService.queue.count == originalQueue.count)
@@ -188,10 +250,10 @@ struct PlayerServiceQueueTests {
 
         // Act - Clear, undo, then redo
         self.playerService.clearQueue()
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
         #expect(!self.playerService.queue.isEmpty)
 
-        self.playerService.redoQueue()
+        await self.playerService.redoQueue()
 
         // Assert - clearQueue() keeps the current track, so queue has 1 item
         #expect(self.playerService.queue.count == 1)
@@ -212,7 +274,7 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.canUndoQueue == true)
 
         // Act - Undo all history
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
 
         // Assert - Can't undo anymore
         #expect(self.playerService.canUndoQueue == false)
@@ -229,13 +291,13 @@ struct PlayerServiceQueueTests {
 
         // Act
         self.playerService.clearQueue()
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
 
         // Assert - Can redo after undo
         #expect(self.playerService.canRedoQueue == true)
 
         // Act
-        self.playerService.redoQueue()
+        await self.playerService.redoQueue()
 
         // Assert - Can't redo anymore
         #expect(self.playerService.canRedoQueue == false)
@@ -255,10 +317,10 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.queue.count == 4)
 
         // Act - Undo multiple times
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
         #expect(self.playerService.queue.count == 2)
 
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
         #expect(self.playerService.queue.count == 3)
     }
 
@@ -272,12 +334,12 @@ struct PlayerServiceQueueTests {
 
         // Act - Undo 10 times (should work)
         for _ in 1 ... 10 {
-            self.playerService.undoQueue()
+            await self.playerService.undoQueue()
         }
 
         // The 11th undo should not change anything (oldest state dropped)
         let queueAfter10Undos = self.playerService.queue.count
-        self.playerService.undoQueue()
+        await self.playerService.undoQueue()
 
         // Assert - Queue unchanged after 10 undos
         #expect(self.playerService.queue.count == queueAfter10Undos)
@@ -341,6 +403,27 @@ struct PlayerServiceQueueTests {
         #expect(newService.currentTrackFeedbackTokens == songs[1].feedbackTokens)
     }
 
+    @Test("Playback persistence rejects a duration from another video")
+    func playbackPersistenceRejectsMismatchedDuration() async {
+        let song = TestFixtures.makeSong(id: "short1", duration: 240)
+        await self.playerService.playQueue([song], startingAt: 0)
+        self.playerService.updatePlaybackState(
+            isPlaying: false,
+            progress: 0,
+            duration: 3600,
+            observedVideoId: "old-mix"
+        )
+
+        self.playerService.saveQueueForPersistence()
+
+        let newService = PlayerService()
+        let restored = newService.restoreQueueFromPersistence()
+
+        #expect(restored)
+        #expect(newService.currentTrack?.videoId == "short1")
+        #expect(newService.duration == 240)
+    }
+
     @Test("Save and restore playback session preserves duplicate track index")
     func playbackSessionPersistencePreservesDuplicateTrackIndex() async {
         let duplicateSong = TestFixtures.makeSong(id: "dup", title: "Duplicate Song")
@@ -358,6 +441,197 @@ struct PlayerServiceQueueTests {
         #expect(newService.currentIndex == 1)
         #expect(newService.currentTrack?.videoId == duplicateSong.videoId)
         #expect(newService.pendingPlayVideoId == duplicateSong.videoId)
+    }
+
+    @Test("Identity switch persists sanitized account metadata")
+    func identitySwitchPersistsSanitizedAccountMetadata() async {
+        let song = Song(
+            id: "identity-persist-sanitized",
+            title: "Identity Persist Sanitized",
+            artists: [],
+            duration: 180,
+            videoId: "identity-persist-sanitized",
+            likeStatus: .like,
+            isInLibrary: true,
+            feedbackTokens: FeedbackTokens(add: "old-add", remove: "old-remove")
+        )
+        defer { self.playerService.clearSavedQueue() }
+        await self.playerService.playQueue([song], startingAt: 0)
+        self.playerService.saveQueueForPersistence()
+        self.playerService.currentWebPlaybackVideoId = { nil }
+
+        self.playerService.reloadCurrentTrackForIdentitySwitch()
+
+        #expect(self.playerService.currentTrack?.likeStatus == nil)
+        #expect(self.playerService.currentTrack?.isInLibrary == nil)
+        #expect(self.playerService.currentTrack?.feedbackTokens == nil)
+        let restored = PlayerService()
+        #expect(restored.restoreQueueFromPersistence())
+        #expect(restored.queue[0].likeStatus == nil)
+        #expect(restored.queue[0].isInLibrary == nil)
+        #expect(restored.queue[0].feedbackTokens == nil)
+        #expect(restored.currentTrack?.likeStatus == nil)
+        #expect(restored.currentTrack?.isInLibrary == nil)
+        #expect(restored.currentTrack?.feedbackTokens == nil)
+    }
+
+    @Test("Authenticated startup clears guest-owned restored playback")
+    func authenticatedStartupClearsGuestOwnedRestoredPlayback() async {
+        let authService = AuthService(webKitManager: MockWebKitManager())
+        authService.completeLogin(sapisid: "placeholder")
+        await authService.enterGuestMode()
+        self.playerService.setAuthService(authService)
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+
+        let restoredService = PlayerService()
+        restoredService.setYTMusicClient(self.mockClient)
+        #expect(restoredService.restoreQueueFromPersistence() == true)
+
+        restoredService.clearGuestPlaybackForAuthenticatedStartup()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == false)
+        #expect(nextLaunchService.queue.isEmpty)
+    }
+
+    @Test("Auth data-store reload does not retag deferred guest restore before startup cleanup")
+    func authDataStoreReloadDoesNotRetagDeferredGuestRestoreBeforeStartupCleanup() async {
+        let authService = AuthService(webKitManager: MockWebKitManager())
+        authService.completeLogin(sapisid: "placeholder")
+        await authService.enterGuestMode()
+        self.playerService.setAuthService(authService)
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+
+        let restoredService = PlayerService()
+        restoredService.setYTMusicClient(self.mockClient)
+        #expect(restoredService.restoreQueueFromPersistence() == true)
+        #expect(restoredService.isPendingRestoredLoadDeferred == true)
+
+        restoredService.reloadCurrentTrackForAuthDataStoreChange(usesCookieFreeDataStore: false)
+        restoredService.clearGuestPlaybackForAuthenticatedStartup()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == false)
+        #expect(nextLaunchService.queue.isEmpty)
+    }
+
+    @Test("Auth data-store reload marks restored guest playback authenticated")
+    func authDataStoreReloadMarksRestoredGuestPlaybackAuthenticated() async {
+        let authService = AuthService(webKitManager: MockWebKitManager())
+        authService.completeLogin(sapisid: "placeholder")
+        await authService.enterGuestMode()
+        self.playerService.setAuthService(authService)
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+
+        self.playerService.reloadCurrentTrackForAuthDataStoreChange(usesCookieFreeDataStore: false)
+
+        let restoredService = PlayerService()
+        restoredService.setYTMusicClient(self.mockClient)
+        #expect(restoredService.restoreQueueFromPersistence() == true)
+
+        restoredService.clearPlaybackForGuestStartup()
+        restoredService.saveQueueForPersistence()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == false)
+        #expect(nextLaunchService.queue.isEmpty)
+    }
+
+    @Test("Guest startup preserves known guest playback session persistence")
+    func guestStartupPreservesKnownGuestPlaybackSessionPersistence() async {
+        let authService = AuthService(webKitManager: MockWebKitManager())
+        await authService.checkLoginStatus()
+        self.playerService.setAuthService(authService)
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+
+        let restoredService = PlayerService()
+        restoredService.setYTMusicClient(self.mockClient)
+        #expect(restoredService.restoreQueueFromPersistence() == true)
+
+        restoredService.clearPlaybackForGuestStartup()
+        restoredService.saveQueueForPersistence()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == true)
+        #expect(nextLaunchService.queue.count == 2)
+        #expect(nextLaunchService.currentIndex == 1)
+    }
+
+    @Test("Guest startup preserves session saved while signed-out login is open")
+    func guestStartupPreservesSignedOutLoginPlaybackSessionPersistence() async {
+        let authService = AuthService(webKitManager: MockWebKitManager())
+        await authService.checkLoginStatus()
+        authService.startLogin()
+        self.playerService.setAuthService(authService)
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+        authService.cancelLoginIfNeeded()
+
+        let restoredService = PlayerService()
+        restoredService.setYTMusicClient(self.mockClient)
+        #expect(restoredService.restoreQueueFromPersistence() == true)
+
+        restoredService.clearPlaybackForGuestStartup()
+        restoredService.saveQueueForPersistence()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == true)
+        #expect(nextLaunchService.queue.count == 2)
+        #expect(nextLaunchService.currentIndex == 1)
+    }
+
+    @Test("Guest startup clears legacy unknown playback session persistence")
+    func guestStartupClearsLegacyUnknownPlaybackSessionPersistence() throws {
+        let songs = TestFixtures.makeSongs(count: 2)
+        let queueData = try JSONEncoder().encode(songs)
+        UserDefaults.standard.set(queueData, forKey: "kaset.saved.queue")
+        UserDefaults.standard.set(1, forKey: "kaset.saved.queueIndex")
+        UserDefaults.standard.removeObject(forKey: "kaset.saved.playbackSession")
+
+        #expect(self.playerService.restoreQueueFromPersistence() == true)
+
+        self.playerService.clearPlaybackForGuestStartup()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == false)
+        #expect(nextLaunchService.queue.isEmpty)
+    }
+
+    @Test("Guest startup clears playback session saved during expired auth")
+    func guestStartupClearsExpiredAuthPlaybackSessionPersistence() async {
+        let authService = AuthService(webKitManager: MockWebKitManager())
+        authService.completeLogin(sapisid: "expired-sapisid")
+        authService.sessionExpired()
+        self.playerService.setAuthService(authService)
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+
+        let restoredService = PlayerService()
+        restoredService.setYTMusicClient(self.mockClient)
+        #expect(restoredService.restoreQueueFromPersistence() == true)
+
+        restoredService.clearPlaybackForGuestStartup()
+
+        let nextLaunchService = PlayerService()
+        nextLaunchService.setYTMusicClient(self.mockClient)
+        #expect(nextLaunchService.restoreQueueFromPersistence() == false)
+        #expect(nextLaunchService.queue.isEmpty)
     }
 
     @Test("Resume on a restored session loads through the hidden persistent player")
@@ -380,6 +654,35 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.state == .loading)
         #expect(self.playerService.showMiniPlayer == false)
         #expect(self.playerService.shouldAutoloadPendingVideo == true)
+    }
+
+    @Test("Repeated unchanged queue persistence skips redundant UserDefaults writes")
+    func repeatedUnchangedQueuePersistenceSkipsWrites() async {
+        let songs = TestFixtures.makeSongs(count: 3)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+        let firstWriteCount = self.playerService.queuePersistenceWriteCountForTesting
+
+        self.playerService.saveQueueForPersistence()
+        self.playerService.saveQueueForPersistence()
+
+        #expect(self.playerService.queuePersistenceWriteCountForTesting == firstWriteCount)
+    }
+
+    @Test("Unchanged queue persistence writes again when backing defaults are missing")
+    func unchangedQueuePersistenceWritesWhenBackingDefaultsAreMissing() async {
+        let songs = TestFixtures.makeSongs(count: 3)
+        await self.playerService.playQueue(songs, startingAt: 1)
+        self.playerService.saveQueueForPersistence()
+        let firstWriteCount = self.playerService.queuePersistenceWriteCountForTesting
+
+        UserDefaults.standard.removeObject(forKey: "kaset.saved.queue")
+        UserDefaults.standard.removeObject(forKey: "kaset.saved.queueIndex")
+        UserDefaults.standard.removeObject(forKey: "kaset.saved.playbackSession")
+        self.playerService.saveQueueForPersistence()
+
+        #expect(self.playerService.queuePersistenceWriteCountForTesting == firstWriteCount + 1)
+        #expect(UserDefaults.standard.data(forKey: "kaset.saved.playbackSession") != nil)
     }
 
     @Test("Clear saved queue removes persistence data")
@@ -490,6 +793,64 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.queue[0].artists[0].name == "Enriched Artist")
     }
 
+    @Test("Background enrichment preserves browse-derived unplayable state")
+    func enrichmentPreservesUnplayableState() async {
+        let incomplete = Song(
+            id: "unplayable-enrichment",
+            title: "Loading...",
+            artists: [],
+            thumbnailURL: nil,
+            videoId: "unplayable-enrichment",
+            isPlayable: false
+        )
+        self.mockClient.songResponses[incomplete.videoId] = Song(
+            id: incomplete.id,
+            title: "Enriched Unavailable Song",
+            artists: [Artist(id: "artist", name: "Artist")],
+            thumbnailURL: URL(string: "https://example.com/enriched-unavailable.jpg"),
+            videoId: incomplete.videoId,
+            isPlayable: true
+        )
+        let entryID = UUID()
+        self.playerService.setQueue(entries: [QueueEntry(id: entryID, song: incomplete)])
+
+        await self.playerService.enrichQueueMetadata()
+
+        #expect(self.playerService.queueEntries[0].id == entryID)
+        #expect(self.playerService.queue[0].title == "Enriched Unavailable Song")
+        #expect(self.playerService.queue[0].artists.first?.name == "Artist")
+        #expect(!self.playerService.queue[0].isPlayable)
+    }
+
+    @Test("Enrichment preserves the .suggested source of a Smart Shuffle entry")
+    func enrichmentPreservesSuggestedSource() async {
+        // Arrange: a complete original plus an incomplete Smart Shuffle suggestion.
+        let original = TestFixtures.makeSong(id: "video-0")
+        let incompleteSuggestion = Song(id: "sug-1", title: "Loading...", artists: [], videoId: "sug-1")
+        self.playerService.setQueue(entries: [
+            QueueEntry(id: UUID(), song: original, source: .queued),
+            QueueEntry(id: UUID(), song: incompleteSuggestion, source: .suggested),
+        ])
+        self.mockClient.songResponses["sug-1"] = Song(
+            id: "sug-1",
+            title: "Enriched Suggestion",
+            artists: [Artist(id: "artist-1", name: "Enriched Artist")],
+            videoId: "sug-1"
+        )
+
+        // Act
+        await self.playerService.enrichQueueMetadata()
+
+        // Assert: metadata updated AND provenance preserved (not demoted to .queued).
+        #expect(self.playerService.queue[1].title == "Enriched Suggestion")
+        #expect(self.playerService.queueEntries[1].source == .suggested)
+        // Still recognized as a suggestion, so it would be stripped, leaving only the original.
+        #expect(
+            PlayerService.stripSuggested(from: self.playerService.queueEntries, keepingCurrentID: nil)
+                .map(\.song.videoId) == ["video-0"]
+        )
+    }
+
     @Test("Metadata enrichment updates queue during playback")
     func metadataEnrichmentDuringPlayback() async {
         // Arrange
@@ -545,9 +906,9 @@ struct PlayerServiceQueueTests {
         await self.playerService.play(song: completeSong)
         try? await Task.sleep(for: .milliseconds(100))
 
-        // Assert - Queue entry was enriched because thumbnailURL was nil (triggers needsUpdate)
-        #expect(self.playerService.queue[0].title == "Different Title")
-        #expect(self.playerService.queue[0].artists[0].name == "Different Artist")
+        // Assert - only missing fields are enriched; newer good title/artist stay authoritative.
+        #expect(self.playerService.queue[0].title == "Good Title")
+        #expect(self.playerService.queue[0].artists[0].name == "Good Artist")
     }
 
     @Test("Metadata enrichment handles API errors gracefully")

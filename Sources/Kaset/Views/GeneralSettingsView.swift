@@ -1,7 +1,6 @@
 import SwiftUI
 
 /// Settings view for general app preferences.
-@available(macOS 26.0, *)
 struct GeneralSettingsView: View {
     @Environment(AuthService.self) private var authService
     @State private var settings = SettingsManager.shared
@@ -15,13 +14,13 @@ struct GeneralSettingsView: View {
         @Bindable var updater = self.updaterService
 
         Form {
-            // MARK: - General Section
+            // MARK: - Account Section
 
             Section {
                 // Account status
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Account")
+                        Text(String(localized: "Account"))
                             .font(.headline)
                         Text(self.accountStatusText)
                             .font(.caption)
@@ -29,7 +28,7 @@ struct GeneralSettingsView: View {
                     }
                     Spacer()
                     if self.authService.state.isLoggedIn {
-                        Button("Sign Out") {
+                        Button(String(localized: "Sign Out")) {
                             Task {
                                 await self.authService.signOut()
                             }
@@ -37,53 +36,48 @@ struct GeneralSettingsView: View {
                     }
                 }
                 .padding(.vertical, 4)
+            } header: {
+                Text(String(localized: "Account"))
+            }
 
-                // Now Playing Notifications
-                Toggle("Show Now Playing Notifications", isOn: self.$settings.showNowPlayingNotifications)
+            // MARK: - Behavior Section
 
+            Section {
                 // Haptic Feedback
                 Toggle("Haptic Feedback", isOn: self.$settings.hapticFeedbackEnabled)
-                    .help("Provide tactile feedback for actions on Force Touch trackpads")
-
-                // Synced Lyrics
-                Toggle("Enable Synced Lyrics", isOn: self.$settings.syncedLyricsEnabled)
-                    .help("Fetch and display real-time synced lyrics when available")
-
-                // Romanization
-                Toggle("Romanize Lyrics", isOn: self.$settings.romanizationEnabled)
-                    .help("Show romanized text (romaji, pinyin, etc.) below non-Latin lyrics")
-
-                // Remember Playback Settings
-                Toggle("Remember Shuffle & Repeat", isOn: self.$settings.rememberPlaybackSettings)
-                    .help("Save shuffle and repeat settings across app restarts")
-
-                // Now Playing Controls
-                Picker("Now Playing Controls", selection: self.$settings.mediaControlStyle) {
-                    ForEach(SettingsManager.MediaControlStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
-                }
-                .help("Choose which buttons appear in the Now Playing widget in Control Center")
+                    .help(String(localized: "Provide tactile feedback for actions on Force Touch trackpads"))
 
                 // Default Launch Page
-                Picker("Default Page on Launch", selection: self.$settings.defaultLaunchPage) {
+                Picker(String(localized: "Default Page on Launch"), selection: self.$settings.defaultLaunchPage) {
                     ForEach(SettingsManager.LaunchPage.allCases) { page in
                         Text(page.displayName).tag(page)
                     }
                 }
+            } header: {
+                Text(String(localized: "Behavior"))
+            }
 
+            // MARK: - Language Section
+
+            Section {
                 // Content Language
-                Picker("Content Language", selection: self.$settings.contentLanguage) {
+                Picker(String(localized: "Content Language"), selection: self.$settings.contentLanguage) {
                     ForEach(SettingsManager.ContentLanguage.allCases) { language in
                         Text(language.displayName).tag(language)
                     }
                 }
-                .help("Choose the language for the app interface")
+                .help(String(localized: "Choose the language for content and search results from YouTube Music"))
+            } header: {
+                Text(String(localized: "Language"))
+            }
 
+            // MARK: - Storage Section
+
+            Section {
                 // Image Cache
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Image Cache")
+                        Text(String(localized: "Image Cache"))
                         Text(self.cacheSize)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -98,8 +92,24 @@ struct GeneralSettingsView: View {
                 }
                 .padding(.vertical, 4)
             } header: {
-                Text("General")
+                Text(String(localized: "Storage"))
             }
+
+            #if DEBUG
+
+                // MARK: - Debug Section
+
+                Section {
+                    Toggle(String(localized: "Use Legacy macOS 15 UI"), isOn: self.$settings.useLegacyMacOS15UI)
+                        .help(String(localized: "Force macOS 15 fallback views and materials while running on macOS 26+ for compatibility debugging"))
+
+                    Text(String(localized: "Disables Liquid Glass, the Command Bar, and Apple Intelligence UI surfaces until toggled off."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text(String(localized: "Debug"))
+                }
+            #endif
 
             // MARK: - Updates Section
 
@@ -108,33 +118,33 @@ struct GeneralSettingsView: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Software Update")
+                        Text(String(localized: "Software Update"))
                         if let lastCheck = self.updaterService.lastUpdateCheckDate {
                             Text("Last checked: \(lastCheck, format: .relative(presentation: .named))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Never checked")
+                            Text(String(localized: "Never checked"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     Spacer()
-                    Button("Check Now") {
+                    Button(String(localized: "Check Now")) {
                         self.updaterService.checkForUpdates()
                     }
                     .disabled(!self.updaterService.canCheckForUpdates)
                 }
                 .padding(.vertical, 4)
             } header: {
-                Text("Updates")
+                Text(String(localized: "Updates"))
             }
 
             // MARK: - About Section
 
             Section {
                 HStack {
-                    Text("Version")
+                    Text(String(localized: "Version"))
                     Spacer()
                     Text(self.appVersion)
                         .foregroundStyle(.secondary)
@@ -142,14 +152,14 @@ struct GeneralSettingsView: View {
 
                 Link(destination: URL(string: "https://github.com/sozercan/kaset")!) {
                     HStack {
-                        Text("GitHub")
+                        Text(String(localized: "GitHub"))
                         Spacer()
                         Image(systemName: "arrow.up.forward.square")
                             .foregroundStyle(.secondary)
                     }
                 }
             } header: {
-                Text("About")
+                Text(String(localized: "About"))
             }
         }
         .formStyle(.grouped)
@@ -163,7 +173,7 @@ struct GeneralSettingsView: View {
     // MARK: - Computed Properties
 
     private var accountStatusText: String {
-        self.authService.state.isLoggedIn ? String(localized: "Signed in to YouTube Music") : String(localized: "Not signed in")
+        self.authService.state.isLoggedIn ? String(localized: "Signed in to YouTube") : String(localized: "Not signed in")
     }
 
     private var appVersion: String {

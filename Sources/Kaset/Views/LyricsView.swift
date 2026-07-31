@@ -8,6 +8,8 @@ struct LyricsView: View {
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
 
     let client: any YTMusicClientProtocol
+    var showsHeader = true
+    var preferredWidth: CGFloat? = 280
 
     @State private var lastLoadedVideoId: String?
     @State private var isLoadingFallback = false
@@ -25,22 +27,23 @@ struct LyricsView: View {
     @Namespace private var lyricsNamespace
 
     var body: some View {
-        GlassEffectContainer(spacing: 0) {
+        CompatGlassContainer(spacing: 0) {
             VStack(spacing: 0) {
-                // Header
-                self.headerView
+                if self.showsHeader {
+                    self.headerView
 
-                Divider()
-                    .opacity(0.3)
+                    Divider()
+                        .opacity(0.3)
+                }
 
                 // Content
                 self.contentView
             }
-            .frame(width: 280)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
-            .glassEffectID("lyricsPanel", in: self.lyricsNamespace)
+            .frame(width: self.preferredWidth)
+            .compatGlass(interactive: true, in: .rect(cornerRadius: 20))
+            .compatGlassID("lyricsPanel", in: self.lyricsNamespace)
         }
-        .glassEffectTransition(.materialize)
+        .compatGlassTransition(.materialize)
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
             if let videoId = newVideoId, videoId != lastLoadedVideoId {
                 // Reset explanation when track changes
@@ -70,10 +73,14 @@ struct LyricsView: View {
     }
 
     private func updateLyricsPolling(for result: LyricResult) {
-        if case .synced = result {
-            SingletonPlayerWebView.shared.startLyricsPoll()
+        if case let .synced(synced) = result {
+            self.playerService.currentLyricsLineIndex = nil
+            self.playerService.currentLyricsDisplayTimeMs = nil
+            SingletonPlayerWebView.shared.startLyricsPoll(lineRanges: synced.bridgeLineRanges)
         } else {
             SingletonPlayerWebView.shared.stopLyricsPoll()
+            self.playerService.currentLyricsLineIndex = nil
+            self.playerService.currentLyricsDisplayTimeMs = nil
         }
     }
 
@@ -81,7 +88,7 @@ struct LyricsView: View {
 
     private var headerView: some View {
         HStack {
-            Text("Lyrics")
+            Text(String(localized: "Lyrics"))
                 .font(.headline)
                 .foregroundStyle(.primary)
             Spacer()
@@ -173,7 +180,8 @@ struct LyricsView: View {
 
             SyncedLyricsDisplayView(
                 lyrics: synced,
-                currentTimeMs: self.playerService.currentTimeMs,
+                currentLineIndex: self.playerService.currentLyricsLineIndex,
+                displayTimeMs: self.playerService.currentLyricsDisplayTimeMs,
                 onSeek: { timeMs in
                     Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
                 }
@@ -311,7 +319,7 @@ struct LyricsView: View {
                         .controlSize(.small)
                         .scaleEffect(0.6)
                         .frame(width: 10, height: 10)
-                    Text("Analyzing...")
+                    Text(String(localized: "Analyzing..."))
                         .font(.subheadline)
                         .foregroundStyle(.tertiary)
                 }
@@ -331,7 +339,7 @@ struct LyricsView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button("Retry") {
+            Button(String(localized: "Retry")) {
                 self.explanationError = nil
                 Task {
                     await self.explainLyrics()
@@ -350,7 +358,7 @@ struct LyricsView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
 
-            Text("No Lyrics Available")
+            Text(String(localized: "No Lyrics Available"))
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
@@ -369,7 +377,7 @@ struct LyricsView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
 
-            Text("No Song Playing")
+            Text(String(localized: "No Song Playing"))
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
@@ -525,6 +533,7 @@ struct LyricsView: View {
     }
 }
 
+@available(macOS 26.0, *)
 #Preview {
     let authService = AuthService()
     let client = YTMusicClient(authService: authService, webKitManager: .shared)

@@ -1,7 +1,6 @@
 import SwiftUI
 
 /// Explore view displaying new releases, charts, and moods & genres.
-@available(macOS 26.0, *)
 struct ExploreView: View {
     @State var viewModel: ExploreViewModel
     @Environment(PlayerService.self) private var playerService
@@ -33,10 +32,16 @@ struct ExploreView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .localizedNavigationTitle("Explore")
-            .navigationDestinations(client: self.viewModel.client)
+            .navigationDestinations(
+                client: self.viewModel.client,
+                playerBarNavigationAction: self.playerBarNavigationAction
+            )
+            .playerBarMusicNavigation(path: self.$navigationPath)
         }
+        .playerBarMusicNavigation(path: self.$navigationPath)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()
+                .playerBarMusicNavigation(path: self.$navigationPath)
         }
         .onAppear {
             if self.viewModel.loadingState == .idle {
@@ -48,6 +53,14 @@ struct ExploreView: View {
         .refreshable {
             await self.viewModel.refresh()
         }
+        .popsNavigationStackOnSidebarReselect(path: self.$navigationPath, for: .explore)
+    }
+
+    private var playerBarNavigationAction: PlayerBarNavigationAction {
+        PlayerBarNavigationAction(
+            openArtist: { self.navigationPath.append($0) },
+            openAlbum: { self.navigationPath.append($0) }
+        )
     }
 
     // MARK: - Views
@@ -58,40 +71,65 @@ struct ExploreView: View {
                 ForEach(self.viewModel.sections) { section in
                     self.sectionView(section)
                 }
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-        }
-    }
 
-    private func sectionView(_ section: HomeSection) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(section.title)
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: 16) {
-                    if section.isChart {
-                        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                            HomeSectionItemCard(item: item, rank: index + 1) {
-                                self.playItem(item, in: section, at: index)
-                            }
-                        }
-                    } else {
-                        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                            HomeSectionItemCard(item: item) {
-                                self.playItem(item, in: section, at: index)
-                            }
-                        }
+                if self.viewModel.hasMoreSections || self.viewModel.loadingState == .loadingMore {
+                    LoadMoreFooter(
+                        isLoading: self.viewModel.loadingState == .loadingMore,
+                        title: "Load More",
+                        loadingTitle: "Loading more...",
+                        autoLoad: true,
+                        autoLoadTrigger: self.viewModel.sections.count
+                    ) {
+                        await self.viewModel.loadMore()
                     }
                 }
             }
-            .scrollClipDisabled()
+            // Edge-to-edge so shelves slide under the glass sidebar; resting
+            // inset is restored per-shelf via contentInset.
+            .padding(.vertical, 20)
+        }
+        .accessibilityIdentifier(AccessibilityID.Explore.scrollView)
+    }
+
+    private func sectionView(_ section: HomeSection) -> some View {
+        CarouselShelfSection(
+            accessibilityLabel: section.title,
+            items: Array(section.items.enumerated()),
+            id: \.element.id,
+            itemAlignment: .top,
+            contentInset: DetailContentLayout.horizontalInset
+        ) {
+            Text(section.title)
+                .font(.title2)
+                .fontWeight(.semibold)
+        } itemContent: { index, item in
+            HomeSectionItemCard(
+                item: item,
+                rank: section.isChart ? index + 1 : nil,
+                playAction: self.playlistPlayAction(for: item)
+            ) {
+                self.playItem(item, in: section, at: index)
+            }
         }
     }
 
     // MARK: - Actions
+
+    private func playlistPlayAction(for item: HomeSectionItem) -> (() -> Void)? {
+        guard case let .playlist(playlist) = item,
+              SongActionsHelper.canQuickPlayPlaylist(playlist)
+        else {
+            return nil
+        }
+
+        return {
+            SongActionsHelper.playPlaylist(
+                playlist,
+                client: self.viewModel.client,
+                playerService: self.playerService
+            )
+        }
+    }
 
     private func playItem(_ item: HomeSectionItem, in _: HomeSection, at _: Int) {
         switch item {
@@ -123,4 +161,5 @@ struct ExploreView: View {
     let client = YTMusicClient(authService: authService, webKitManager: .shared)
     ExploreView(viewModel: ExploreViewModel(client: client))
         .environment(PlayerService())
+        .environment(authService)
 }

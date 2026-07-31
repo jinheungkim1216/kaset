@@ -8,7 +8,6 @@ import SwiftUI
 /// A single account row component displaying account info.
 ///
 /// Shows the account avatar, name, handle, type badge, and selection state.
-@available(macOS 26.0, *)
 struct AccountRowView: View {
     let account: UserAccount
     let isSelected: Bool
@@ -50,7 +49,7 @@ struct AccountRowView: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.blue)
-                        .accessibilityLabel("Selected")
+                        .accessibilityLabel(String(localized: "Selected"))
                 }
             }
             .padding(.horizontal, 12)
@@ -73,7 +72,7 @@ struct AccountRowView: View {
     private var avatarView: some View {
         Group {
             if let thumbnailURL = account.thumbnailURL {
-                CachedAsyncImage(url: thumbnailURL, targetSize: CGSize(width: 80, height: 80)) { image in
+                CachedAsyncImage(url: thumbnailURL, targetSize: CGSize(width: 40, height: 40)) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -154,7 +153,6 @@ struct AccountRowView: View {
 
 // MARK: - Preview
 
-@available(macOS 26.0, *)
 #Preview("Primary Account - Selected") {
     let account = UserAccount(
         id: "primary",
@@ -174,7 +172,6 @@ struct AccountRowView: View {
     .padding()
 }
 
-@available(macOS 26.0, *)
 #Preview("Brand Account - Not Selected") {
     let account = UserAccount(
         id: "brand123",
@@ -194,7 +191,6 @@ struct AccountRowView: View {
     .padding()
 }
 
-@available(macOS 26.0, *)
 #Preview("Account Without Handle") {
     let account = UserAccount(
         id: "nohandle",

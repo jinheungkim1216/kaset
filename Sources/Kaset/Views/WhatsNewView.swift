@@ -5,7 +5,6 @@ import SwiftUI
 
 /// Sheet view that showcases new features for the current app version.
 /// Displays either structured feature rows (static fallback) or markdown release notes (from GitHub).
-@available(macOS 26.0, *)
 struct WhatsNewView: View {
     private enum Layout {
         static let sheetWidth: CGFloat = 640
@@ -57,7 +56,7 @@ struct WhatsNewView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .glassEffect(.regular, in: .capsule)
+                .compatGlass(in: .capsule)
         }
         .frame(maxWidth: .infinity)
     }
@@ -136,7 +135,7 @@ struct WhatsNewView: View {
                 Button {
                     NSWorkspace.shared.open(url)
                 } label: {
-                    Label("Learn more", systemImage: "arrow.up.right")
+                    Label(String(localized: "Learn more"), systemImage: "arrow.up.right")
                         .font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.plain)
@@ -148,11 +147,11 @@ struct WhatsNewView: View {
             Button {
                 self.onDismiss()
             } label: {
-                Text("Continue")
+                Text(String(localized: "Continue"))
                     .font(.headline)
                     .frame(minWidth: 160)
             }
-            .buttonStyle(.glassProminent)
+            .compatGlassProminentButton()
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
         }
@@ -171,7 +170,6 @@ struct WhatsNewView: View {
 // MARK: - MarkdownContentView
 
 /// Renders GitHub-flavored markdown into native SwiftUI views.
-@available(macOS 26.0, *)
 private struct MarkdownContentView: View {
     let markdown: String
 
@@ -258,7 +256,9 @@ private struct MarkdownContentView: View {
                     codeLines.append(lines[i])
                     i += 1
                 }
-                if i < lines.count { i += 1 } // skip closing ```
+                if i < lines.count {
+                    i += 1
+                } // skip closing ```
                 let code = codeLines.joined(separator: "\n")
                 result.append(AnyView(Self.codeBlock(code)))
             } else {
@@ -375,7 +375,6 @@ private struct MarkdownContentView: View {
 // MARK: - WhatsNewFeatureRow
 
 /// A row displaying a single feature with icon, title, and subtitle.
-@available(macOS 26.0, *)
 private struct WhatsNewFeatureRow: View {
     @Environment(\.colorScheme) private var colorScheme
 

@@ -3,9 +3,9 @@ import SwiftUI
 // MARK: - QueueView
 
 /// Right sidebar panel displaying the playback queue.
-@available(macOS 26.0, *)
 struct QueueView: View {
     @Environment(PlayerService.self) private var playerService
+    @Environment(AuthService.self) private var authService
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(\.showCommandBar) private var showCommandBar
 
@@ -13,7 +13,7 @@ struct QueueView: View {
     @Namespace private var queueNamespace
 
     var body: some View {
-        GlassEffectContainer(spacing: 0) {
+        CompatGlassContainer(spacing: 0) {
             VStack(spacing: 0) {
                 // Header
                 self.headerView
@@ -25,10 +25,10 @@ struct QueueView: View {
                 self.contentView
             }
             .frame(width: 280)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
-            .glassEffectID("queuePanel", in: self.queueNamespace)
+            .compatGlass(interactive: true, in: .rect(cornerRadius: 20))
+            .compatGlassID("queuePanel", in: self.queueNamespace)
         }
-        .glassEffectTransition(.materialize)
+        .compatGlassTransition(.materialize)
         .accessibilityIdentifier(AccessibilityID.Queue.container)
     }
 
@@ -36,7 +36,7 @@ struct QueueView: View {
 
     private var headerView: some View {
         HStack {
-            Text("Up Next")
+            Text(String(localized: "Up Next"))
                 .font(.headline)
                 .foregroundStyle(.primary)
 
@@ -47,7 +47,7 @@ struct QueueView: View {
                 Button {
                     self.playerService.clearQueue()
                 } label: {
-                    Text("Clear")
+                    Text(String(localized: "Clear"))
                         .font(.subheadline)
                         .foregroundStyle(.red)
                 }
@@ -58,7 +58,7 @@ struct QueueView: View {
             Button {
                 self.playerService.toggleQueueDisplayMode()
             } label: {
-                Label("Edit", systemImage: "square.and.pencil")
+                Label(String(localized: "Edit"), systemImage: "square.and.pencil")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -87,11 +87,11 @@ struct QueueView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
 
-            Text("No Queue")
+            Text(String(localized: "No Queue"))
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            Text("Play songs from a playlist or album to build your queue.")
+            Text(String(localized: "Play songs from a playlist or album to build your queue."))
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -107,16 +107,23 @@ struct QueueView: View {
                 ForEach(Array(self.playerService.queueEntries.enumerated()), id: \.element.id) { index, entry in
                     QueueRowView(
                         song: entry.song,
-                        isCurrentTrack: index == self.playerService.currentIndex,
+                        isCurrentTrack: index == self.playerService.activePlaybackQueueIndex,
                         index: index,
+                        isSuggested: entry.source == .suggested,
+                        allowsLikeActions: self.authService.hasPersonalAccount,
                         favoritesManager: self.favoritesManager,
                         playerService: self.playerService,
                         onRemove: {
-                            self.playerService.removeFromQueue(entryIDs: Set([entry.id]))
+                            self.playerService.removeFromQueue(entryIDs: [entry.id])
                         },
                         onTap: {
-                            Task {
-                                await self.playerService.playFromQueue(at: index)
+                            let reservation = self.playerService.reserveMusicPlaybackIntent()
+                            Task { @MainActor in
+                                guard let intent = self.playerService.claimMusicPlaybackIntent(
+                                    reservation,
+                                    queueEntryID: entry.id
+                                ) else { return }
+                                await self.playerService.playFromQueue(entryID: entry.id, intent: intent)
                             }
                         }
                     )
@@ -131,11 +138,12 @@ struct QueueView: View {
 
 // MARK: - QueueRowView
 
-@available(macOS 26.0, *)
 private struct QueueRowView: View {
     let song: Song
     let isCurrentTrack: Bool
     let index: Int
+    let isSuggested: Bool
+    let allowsLikeActions: Bool
     let favoritesManager: FavoritesManager
     let playerService: PlayerService
     let onRemove: () -> Void
@@ -174,7 +182,7 @@ private struct QueueRowView: View {
                 Spacer()
 
                 // Favorite toggle
-                LikeButton(song: self.song, isRowHovered: self.isHovering)
+                LikeButton(song: self.song, isRowHovered: self.isHovering, allowsActions: self.allowsLikeActions)
 
                 // Duration
                 if let duration = song.duration {
@@ -207,7 +215,7 @@ private struct QueueRowView: View {
                 Button(role: .destructive) {
                     self.onRemove()
                 } label: {
-                    Label("Remove from Queue", systemImage: "minus.circle")
+                    Label(String(localized: "Remove from Queue"), systemImage: "minus.circle")
                 }
             }
         }
@@ -224,6 +232,11 @@ private struct QueueRowView: View {
                     options: .repeating,
                     isActive: self.playerService.isPlaying
                 )
+        } else if self.isSuggested {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(PackageResourceLookup.brandAccent)
+                .accessibilityLabel(Text(String(localized: "Suggested")))
         } else {
             Text("\(self.index + 1)")
                 .font(.system(size: 12))
@@ -247,7 +260,6 @@ private struct QueueRowView: View {
     }
 }
 
-@available(macOS 26.0, *)
 #Preview("Queue View") {
     let playerService = PlayerService()
     QueueView()
@@ -256,7 +268,6 @@ private struct QueueRowView: View {
         .frame(height: 600)
 }
 
-@available(macOS 26.0, *)
 #Preview("Queue View with Items") {
     let playerService = PlayerService()
     // Note: In real use, queue would be populated via playQueue()

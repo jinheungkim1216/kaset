@@ -4,18 +4,19 @@ import SwiftUI
 
 /// View modifier that adds common navigation destinations for Playlist, Artist, MoodCategory, and TopSongsDestination.
 /// Note: Lyrics sidebar is handled globally in MainWindow, outside the NavigationSplitView.
-@available(macOS 26.0, *)
 struct NavigationDestinationsModifier: ViewModifier {
     let client: any YTMusicClientProtocol
-    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    let playerBarNavigationAction: PlayerBarNavigationAction
+    @Environment(\.libraryViewModel) private var libraryViewModel: LibraryViewModel?
+    @Environment(\.usesLegacyMacOS15UI) private var usesLegacyMacOS15UI
 
+    // swiftlint:disable:next function_body_length
     func body(content: Content) -> some View {
         content
             .navigationDestination(for: Playlist.self) { playlist in
                 // Check if this is a mood/genre category disguised as a playlist
-                if MoodCategory.isMoodCategory(playlist.id) {
-                    // Parse the ID and navigate to mood category view
-                    if let parsed = MoodCategory.parseId(playlist.id) {
+                if playlist.resolvedMoodCategoryEndpoint != nil {
+                    if let parsed = playlist.resolvedMoodCategoryEndpoint {
                         let category = MoodCategory(
                             browseId: parsed.browseId,
                             params: parsed.params,
@@ -29,22 +30,50 @@ struct NavigationDestinationsModifier: ViewModifier {
                         )
                     } else {
                         // Fallback - shouldn't happen
+                        if !self.usesLegacyMacOS15UI, #available(macOS 26.0, *) {
+                            PlaylistDetailView(
+                                playlist: playlist,
+                                viewModel: PlaylistDetailViewModel(
+                                    playlist: playlist,
+                                    client: self.client
+                                ),
+                                playerBarNavigationAction: self.playerBarNavigationAction
+                            )
+                            .environment(\.libraryViewModel, self.libraryViewModel)
+                        } else {
+                            SimplePlaylistDetailView(
+                                playlist: playlist,
+                                viewModel: PlaylistDetailViewModel(
+                                    playlist: playlist,
+                                    client: self.client
+                                ),
+                                playerBarNavigationAction: self.playerBarNavigationAction
+                            )
+                            .environment(\.libraryViewModel, self.libraryViewModel)
+                        }
+                    }
+                } else {
+                    if !self.usesLegacyMacOS15UI, #available(macOS 26.0, *) {
                         PlaylistDetailView(
                             playlist: playlist,
                             viewModel: PlaylistDetailViewModel(
                                 playlist: playlist,
                                 client: self.client
-                            )
+                            ),
+                            playerBarNavigationAction: self.playerBarNavigationAction
                         )
-                    }
-                } else {
-                    PlaylistDetailView(
-                        playlist: playlist,
-                        viewModel: PlaylistDetailViewModel(
+                        .environment(\.libraryViewModel, self.libraryViewModel)
+                    } else {
+                        SimplePlaylistDetailView(
                             playlist: playlist,
-                            client: self.client
+                            viewModel: PlaylistDetailViewModel(
+                                playlist: playlist,
+                                client: self.client
+                            ),
+                            playerBarNavigationAction: self.playerBarNavigationAction
                         )
-                    )
+                        .environment(\.libraryViewModel, self.libraryViewModel)
+                    }
                 }
             }
             .navigationDestination(for: MoodCategory.self) { (category: MoodCategory) in
@@ -62,7 +91,8 @@ struct NavigationDestinationsModifier: ViewModifier {
                         artist: artist,
                         client: self.client,
                         libraryViewModel: self.libraryViewModel
-                    )
+                    ),
+                    playerBarNavigationAction: self.playerBarNavigationAction
                 )
             }
             .navigationDestination(for: TopSongsDestination.self) { destination in
@@ -73,7 +103,7 @@ struct NavigationDestinationsModifier: ViewModifier {
             }
             .navigationDestination(for: PodcastShow.self) { [libraryViewModel] show in
                 PodcastShowView(show: show, client: self.client)
-                    .environment(libraryViewModel)
+                    .environment(\.libraryViewModel, libraryViewModel)
             }
             .navigationDestination(for: ArtistSeeAllDestination.self) { destination in
                 switch destination.endpoint.pageType {
@@ -97,10 +127,15 @@ struct NavigationDestinationsModifier: ViewModifier {
     }
 }
 
-@available(macOS 26.0, *)
 extension View {
     /// Adds common navigation destinations for Playlist, Artist, MoodCategory, and TopSongsDestination.
-    func navigationDestinations(client: any YTMusicClientProtocol) -> some View {
-        modifier(NavigationDestinationsModifier(client: client))
+    func navigationDestinations(
+        client: any YTMusicClientProtocol,
+        playerBarNavigationAction: PlayerBarNavigationAction = .disabled
+    ) -> some View {
+        modifier(NavigationDestinationsModifier(
+            client: client,
+            playerBarNavigationAction: playerBarNavigationAction
+        ))
     }
 }

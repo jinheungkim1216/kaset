@@ -39,6 +39,7 @@ final class YTMusicClient: YTMusicClientProtocol {
     private let authService: AuthService
     private let webKitManager: WebKitManager
     private let session: URLSession
+    private let apiKeyResolver: YTMusicAPIKeyResolver
     private let logger = DiagnosticsLogger.api
 
     /// Provider for the current brand account ID.
@@ -46,39 +47,43 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Returns nil for primary account, brand ID string for brand accounts.
     var brandIdProvider: (() -> String?)?
 
+    /// Provider for the selected account's opaque owner-and-account scope.
+    ///
+    /// Primary Google accounts all use the literal ID `"primary"`, so brand
+    /// identity alone cannot distinguish a different signed-in Google account.
+    /// AccountService supplies a collision-resistant scope derived from the
+    /// authenticated Google owner and selected YouTube identity.
+    var accountScopeProvider: (() -> String?)?
+
     /// YouTube Music API base URL.
     private static let baseURL = "https://music.youtube.com/youtubei/v1"
-
-    /// API key used in requests (extracted from YouTube Music web client).
-    private static let apiKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
 
     /// Client version for WEB_REMIX.
     private static let clientVersion = "1.20231204.01.00"
 
     /// Centralized storage for continuation tokens keyed by content type.
     private var continuationTokens: [PaginatedContentType: String] = [:]
-
+    private var continuationGeneration = 0
     /// Separate continuation token for account-backed recommendation surfaces that reuse `FEmusic_home`.
     private var personalizedRecommendationsContinuationToken: String?
 
-    init(authService: AuthService, webKitManager: WebKitManager = .shared) {
+    init(
+        authService: AuthService,
+        webKitManager: WebKitManager = .shared,
+        session: URLSession? = nil,
+        apiKeyResolver: YTMusicAPIKeyResolver? = nil
+    ) {
         self.authService = authService
         self.webKitManager = webKitManager
 
-        let configuration = URLSessionConfiguration.default
-        configuration.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-            "Accept-Encoding": "gzip, deflate, br",
-        ]
-        // Increase connection pool for parallel requests (HTTP/2 multiplexing is automatic)
-        configuration.httpMaximumConnectionsPerHost = 6
-        // Use shared URL cache for transport-level caching
-        configuration.urlCache = URLCache.shared
-        configuration.requestCachePolicy = .useProtocolCachePolicy
-        // Reduce timeout for faster failure detection
-        configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 30
-        self.session = URLSession(configuration: configuration)
+        let resolvedSession: URLSession = if let session {
+            session
+        } else {
+            URLSession(configuration: APISessionConfiguration.make())
+        }
+
+        self.session = resolvedSession
+        self.apiKeyResolver = apiKeyResolver ?? YTMusicAPIKeyResolver(session: resolvedSession)
     }
 
     // MARK: - Generic Pagination Methods
@@ -92,14 +97,17 @@ final class YTMusicClient: YTMusicClientProtocol {
             "browseId": type.rawValue,
         ]
 
+        let generation = self.continuationGeneration
         let data = try await request("browse", body: body, ttl: ttl)
         let response = HomeResponseParser.parse(data)
 
         // Store continuation token for progressive loading
         let token = HomeResponseParser.extractContinuationToken(from: data)
-        self.continuationTokens[type] = token
+        if generation == self.continuationGeneration {
+            self.continuationTokens[type] = token
+        }
 
-        let hasMore = token != nil
+        let hasMore = generation == self.continuationGeneration && token != nil
         self.logger.info("\(type.displayName.capitalized) page loaded: \(response.sections.count) initial sections, hasMore: \(hasMore)")
         return response
     }
@@ -113,10 +121,15 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         self.logger.info("Fetching \(type.displayName) continuation")
+        let generation = self.continuationGeneration
 
         do {
             let continuationData = try await requestContinuation(token)
             let additionalSections = HomeResponseParser.parseContinuation(continuationData)
+            guard generation == self.continuationGeneration else {
+                self.logger.info("Discarding stale \(type.displayName) continuation after session reset")
+                return nil
+            }
             self.continuationTokens[type] = HomeResponseParser.extractContinuationTokenFromContinuation(continuationData)
             let hasMore = self.continuationTokens[type] != nil
 
@@ -161,11 +174,15 @@ final class YTMusicClient: YTMusicClientProtocol {
             "browseId": PaginatedContentType.home.rawValue,
         ]
 
+        let generation = self.continuationGeneration
         let data = try await self.request("browse", body: body, ttl: APICache.TTL.home)
         let response = HomeResponseParser.parse(data)
-        self.personalizedRecommendationsContinuationToken = HomeResponseParser.extractContinuationToken(from: data)
+        let token = HomeResponseParser.extractContinuationToken(from: data)
+        if generation == self.continuationGeneration {
+            self.personalizedRecommendationsContinuationToken = token
+        }
 
-        let hasMore = self.personalizedRecommendationsContinuationToken != nil
+        let hasMore = generation == self.continuationGeneration && token != nil
         self.logger.info("Personalized recommendations loaded: \(response.sections.count) sections, hasMore: \(hasMore)")
         return response
     }
@@ -178,10 +195,15 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         self.logger.info("Fetching personalized recommendations continuation")
+        let generation = self.continuationGeneration
 
         do {
-            let continuationData = try await self.requestContinuation(token)
+            let continuationData = try await self.requestContinuation(token, authPolicy: .required)
             let additionalSections = HomeResponseParser.parseContinuation(continuationData)
+            guard generation == self.continuationGeneration else {
+                self.logger.info("Discarding stale personalized recommendations continuation after session reset")
+                return nil
+            }
             self.personalizedRecommendationsContinuationToken = HomeResponseParser.extractContinuationTokenFromContinuation(continuationData)
             let hasMore = self.personalizedRecommendationsContinuationToken != nil
 
@@ -267,7 +289,31 @@ final class YTMusicClient: YTMusicClientProtocol {
 
     /// Fetches the next batch of history sections via continuation.
     func getHistoryContinuation() async throws -> [HomeSection]? {
-        try await self.fetchContinuation(type: .history)
+        guard let continuation = continuationTokens[.history] else {
+            self.logger.debug("No history continuation token available")
+            return nil
+        }
+
+        self.logger.info("Fetching history continuation")
+        let generation = self.continuationGeneration
+
+        do {
+            let continuationData = try await self.requestContinuation(continuation, authPolicy: .required)
+            let additionalSections = HomeResponseParser.parseContinuation(continuationData)
+            guard generation == self.continuationGeneration else {
+                self.logger.info("Discarding stale history continuation after session reset")
+                return nil
+            }
+            self.continuationTokens[.history] = HomeResponseParser.extractContinuationTokenFromContinuation(continuationData)
+            let hasMore = self.continuationTokens[.history] != nil
+
+            self.logger.info("History continuation loaded: \(additionalSections.count) sections, hasMore: \(hasMore)")
+            return additionalSections
+        } catch {
+            self.logger.warning("Failed to fetch history continuation: \(error.localizedDescription)")
+            self.continuationTokens[.history] = nil
+            throw error
+        }
     }
 
     /// Whether more history sections are available to load.
@@ -283,14 +329,17 @@ final class YTMusicClient: YTMusicClientProtocol {
             "browseId": PaginatedContentType.podcasts.rawValue,
         ]
 
+        let generation = self.continuationGeneration
         let data = try await request("browse", body: body, ttl: APICache.TTL.home)
         let sections = PodcastParser.parseDiscovery(data)
 
         // Store continuation token for progressive loading
         let token = HomeResponseParser.extractContinuationToken(from: data)
-        self.continuationTokens[.podcasts] = token
+        if generation == self.continuationGeneration {
+            self.continuationTokens[.podcasts] = token
+        }
 
-        let hasMore = token != nil
+        let hasMore = generation == self.continuationGeneration && token != nil
         self.logger.info("Podcasts page loaded: \(sections.count) initial sections, hasMore: \(hasMore)")
         return sections
     }
@@ -303,10 +352,15 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         self.logger.info("Fetching podcasts continuation")
+        let generation = self.continuationGeneration
 
         do {
             let continuationData = try await requestContinuation(token)
             let additionalSections = PodcastParser.parseContinuation(continuationData)
+            guard generation == self.continuationGeneration else {
+                self.logger.info("Discarding stale podcasts continuation after session reset")
+                return nil
+            }
             self.continuationTokens[.podcasts] = HomeResponseParser.extractContinuationTokenFromContinuation(continuationData)
             let hasMore = self.continuationTokens[.podcasts] != nil
 
@@ -352,11 +406,15 @@ final class YTMusicClient: YTMusicClientProtocol {
     }
 
     /// Makes a continuation request for browse endpoints.
-    private func requestContinuation(_ token: String, ttl: TimeInterval? = APICache.TTL.home) async throws -> [String: Any] {
+    private func requestContinuation(
+        _ token: String,
+        ttl: TimeInterval? = APICache.TTL.home,
+        authPolicy: RequestAuthPolicy? = nil
+    ) async throws -> [String: Any] {
         let body: [String: Any] = [
             "continuation": token,
         ]
-        return try await self.request("browse", body: body, ttl: ttl)
+        return try await self.request("browse", body: body, ttl: ttl, authPolicy: authPolicy)
     }
 
     /// Makes a continuation request for next/queue endpoints.
@@ -376,7 +434,7 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
         let response = SearchResponseParser.parse(data)
-        self.logger.info("Search found \(response.songs.count) songs, \(response.albums.count) albums, \(response.artists.count) artists, \(response.playlists.count) playlists")
+        self.logger.info("Search found \(response.allItems.count) ordered results")
         return response
     }
 
@@ -384,13 +442,9 @@ final class YTMusicClient: YTMusicClientProtocol {
     func searchSongs(query: String) async throws -> [Song] {
         self.logger.info("Searching songs only for: \(query)")
 
-        // YouTube Music API params for songs filter
-        // Derived from: EgWKAQ (filtered) + II (songs) + AWoMEA4QChADEAQQCRAF (no spelling correction)
-        let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
-
         let body: [String: Any] = [
             "query": query,
-            "params": songsFilterParams,
+            "params": SearchFilterParams.songs,
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
@@ -405,8 +459,10 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Pattern: EgWKAQ (base) + filter code + AWoMEA4QChADEAQQCRAF (no spelling correction)
     private enum SearchFilterParams {
         static let songs = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
+        static let videos = "EgWKAQIQAWoMEA4QChADEAQQCRAF"
         static let albums = "EgWKAQIYAWoMEA4QChADEAQQCRAF"
         static let artists = "EgWKAQIgAWoMEA4QChADEAQQCRAF"
+        static let profiles = "EgWKAQJYAWoMEA4QChADEAQQCRAF"
         static let playlists = "EgWKAQIoAWoMEA4QChADEAQQCRAF"
         /// Featured playlists (first-party YouTube Music curated playlists)
         static let featuredPlaylists = "EgeKAQQoADgBagwQDhAKEAMQBBAJEAU="
@@ -414,14 +470,23 @@ final class YTMusicClient: YTMusicClientProtocol {
         static let communityPlaylists = "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU="
         /// Podcasts (podcast shows)
         static let podcasts = "EgWKAQJQAWoQEBAQCRAEEAMQBRAKEBUQEQ%3D%3D"
+        static let episodes = "EgWKAQJIAWoMEA4QChADEAQQCRAF"
     }
 
-    /// Continuation token for filtered search pagination.
-    private var searchContinuationToken: String?
+    /// Searches for videos only (filtered search with pagination).
+    func searchVideos(query: String) async throws -> SearchResponse {
+        self.logger.info("Searching videos only for: \(query)")
 
-    /// Whether more search results are available to load.
-    var hasMoreSearchResults: Bool {
-        self.searchContinuationToken != nil
+        let body: [String: Any] = [
+            "query": query,
+            "params": SearchFilterParams.videos,
+        ]
+
+        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let response = SearchResponseParser.parse(data)
+
+        self.logger.info("Videos search found \(response.videos.count) videos, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for albums only (filtered search with pagination).
@@ -434,11 +499,9 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (albums, token) = SearchResponseParser.parseAlbumsOnly(data)
-        self.searchContinuationToken = token
-
-        self.logger.info("Albums search found \(albums.count) albums, hasMore: \(token != nil)")
-        return SearchResponse(songs: [], albums: albums, artists: [], playlists: [], continuationToken: token)
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Albums search found \(response.albums.count) albums and \(response.audiobooks.count) audiobooks, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for artists only (filtered search with pagination).
@@ -451,11 +514,25 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (artists, token) = SearchResponseParser.parseArtistsOnly(data)
-        self.searchContinuationToken = token
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Artists search found \(response.artists.count) artists, hasMore: \(response.hasMore)")
+        return response
+    }
 
-        self.logger.info("Artists search found \(artists.count) artists, hasMore: \(token != nil)")
-        return SearchResponse(songs: [], albums: [], artists: artists, playlists: [], continuationToken: token)
+    /// Searches for profiles only (filtered search with pagination).
+    func searchProfiles(query: String) async throws -> SearchResponse {
+        self.logger.info("Searching profiles only for: \(query)")
+
+        let body: [String: Any] = [
+            "query": query,
+            "params": SearchFilterParams.profiles,
+        ]
+
+        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let response = SearchResponseParser.parse(data)
+
+        self.logger.info("Profiles search found \(response.profiles.count) profiles, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for playlists only (filtered search with pagination).
@@ -468,11 +545,9 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (playlists, token) = SearchResponseParser.parsePlaylistsOnly(data)
-        self.searchContinuationToken = token
-
-        self.logger.info("Playlists search found \(playlists.count) playlists, hasMore: \(token != nil)")
-        return SearchResponse(songs: [], albums: [], artists: [], playlists: playlists, continuationToken: token)
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Playlists search found \(response.playlists.count) playlists, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for featured playlists only (YouTube Music curated playlists).
@@ -485,11 +560,9 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (playlists, token) = SearchResponseParser.parsePlaylistsOnly(data)
-        self.searchContinuationToken = token
-
-        self.logger.info("Featured playlists search found \(playlists.count) playlists, hasMore: \(token != nil)")
-        return SearchResponse(songs: [], albums: [], artists: [], playlists: playlists, continuationToken: token)
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Featured playlists search found \(response.playlists.count) playlists, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for community playlists only (user-created playlists).
@@ -502,11 +575,9 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (playlists, token) = SearchResponseParser.parsePlaylistsOnly(data)
-        self.searchContinuationToken = token
-
-        self.logger.info("Community playlists search found \(playlists.count) playlists, hasMore: \(token != nil)")
-        return SearchResponse(songs: [], albums: [], artists: [], playlists: playlists, continuationToken: token)
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Community playlists search found \(response.playlists.count) playlists, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for podcasts only (podcast shows).
@@ -519,18 +590,9 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (podcastShows, token) = SearchResponseParser.parsePodcastsOnly(data)
-        self.searchContinuationToken = token
-
-        self.logger.info("Podcasts search found \(podcastShows.count) shows, hasMore: \(token != nil)")
-        return SearchResponse(
-            songs: [],
-            albums: [],
-            artists: [],
-            playlists: [],
-            podcastShows: podcastShows,
-            continuationToken: token
-        )
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Podcasts search found \(response.podcastShows.count) shows, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Searches for songs only with pagination support.
@@ -543,48 +605,53 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
-        let (songs, token) = SearchResponseParser.parseSongsWithContinuation(data)
-        self.searchContinuationToken = token
-
-        self.logger.info("Songs search found \(songs.count) songs, hasMore: \(token != nil)")
-        return SearchResponse(songs: songs, albums: [], artists: [], playlists: [], continuationToken: token)
+        let response = SearchResponseParser.parse(data)
+        self.logger.info("Songs search found \(response.songs.count) songs, hasMore: \(response.hasMore)")
+        return response
     }
 
-    /// Fetches the next batch of search results via continuation.
-    /// Returns nil if no more results are available.
-    func getSearchContinuation() async throws -> SearchResponse? {
-        guard let token = searchContinuationToken else {
-            self.logger.debug("No search continuation token available")
-            return nil
-        }
+    /// Searches for podcast episodes only (filtered search with pagination).
+    func searchEpisodes(query: String) async throws -> SearchResponse {
+        self.logger.info("Searching podcast episodes only for: \(query)")
 
+        let body: [String: Any] = [
+            "query": query,
+            "params": SearchFilterParams.episodes,
+        ]
+
+        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let response = SearchResponseParser.parse(data)
+
+        self.logger.info("Episodes search found \(response.podcastEpisodes.count) episodes, hasMore: \(response.hasMore)")
+        return response
+    }
+
+    /// Fetches the next batch of search results for an explicit continuation value.
+    func getSearchContinuation(token: String) async throws -> SearchResponse {
         self.logger.info("Fetching search continuation")
+        let generation = self.continuationGeneration
 
-        do {
-            let continuationData = try await requestContinuation(token, ttl: APICache.TTL.search)
-            let response = SearchResponseParser.parseContinuation(continuationData)
-            self.searchContinuationToken = response.continuationToken
-
-            self.logger.info("Search continuation loaded: \(response.allItems.count) items, hasMore: \(response.hasMore)")
-            return response
-        } catch {
-            self.logger.warning("Failed to fetch search continuation: \(error.localizedDescription)")
-            self.searchContinuationToken = nil
-            throw error
+        let body: [String: Any] = [
+            "continuation": token,
+        ]
+        let continuationData = try await request("search", body: body, ttl: APICache.TTL.search)
+        guard generation == self.continuationGeneration else {
+            self.logger.info("Discarding stale search continuation after session reset")
+            throw CancellationError()
         }
-    }
+        let response = SearchResponseParser.parseContinuation(continuationData)
 
-    /// Clears the search continuation token.
-    func clearSearchContinuation() {
-        self.searchContinuationToken = nil
+        self.logger.info("Search continuation loaded: \(response.allItems.count) items, hasMore: \(response.hasMore)")
+        return response
     }
 
     /// Clears cached continuation/session state when switching accounts.
     func resetSessionStateForAccountSwitch() {
         self.logger.info("Resetting client session state for account switch")
+        self.continuationGeneration &+= 1
+        APICache.shared.invalidateAll()
         self.continuationTokens.removeAll()
         self.personalizedRecommendationsContinuationToken = nil
-        self.searchContinuationToken = nil
         self.likedSongsContinuationToken = nil
     }
 
@@ -624,6 +691,7 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Fetches the user's library content including playlists, artists, and podcast shows.
     func getLibraryContent() async throws -> PlaylistParser.LibraryContent {
         self.logger.info("Fetching library content")
+        let accountScope = self.cacheScope(authenticated: true)
 
         let landingData = try await self.request(
             "browse",
@@ -633,19 +701,23 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         let landingContent = PlaylistParser.parseLibraryContent(landingData)
         let playlists = try await self.fetchLibraryPlaylists(fallback: landingContent.playlists)
+        let (albums, albumsSource) = try await self.fetchLibraryAlbums(fallback: landingContent.albums)
         let (artists, artistsSource) = try await self.fetchLibraryArtists(fallback: landingContent.artists)
         let uploadedSongsPlaylist = try await self.fetchUploadedSongsPlaylist()
         let content = PlaylistParser.LibraryContent(
             playlists: playlists,
+            albums: albums,
             artists: artists,
             podcastShows: landingContent.podcastShows,
             uploadedSongsPlaylist: uploadedSongsPlaylist,
-            artistsSource: artistsSource
+            albumsSource: albumsSource,
+            artistsSource: artistsSource,
+            accountScope: accountScope
         )
 
         let hasUploadedSongs = content.uploadedSongsPlaylist != nil
         self.logger.info(
-            "Parsed \(content.playlists.count) library playlists, \(content.artists.count) artists, \(content.podcastShows.count) podcasts, uploads: \(hasUploadedSongs)"
+            "Parsed \(content.playlists.count) library playlists, \(content.albums.count) albums, \(content.artists.count) artists, \(content.podcastShows.count) podcasts, uploads: \(hasUploadedSongs)"
         )
         return content
     }
@@ -674,6 +746,90 @@ final class YTMusicClient: YTMusicClientProtocol {
         } catch {
             self.logger.warning("Library playlists endpoint failed, falling back to landing preview: \(error.localizedDescription)")
             return fallbackPlaylists
+        }
+    }
+
+    /// Fetches saved albums from the dedicated browse endpoint with graceful fallback to the Library landing preview.
+    private func fetchLibraryAlbums(
+        fallback fallbackAlbums: [Album]
+    ) async throws -> ([Album], PlaylistParser.LibraryAlbumsSource) {
+        do {
+            let albumsData = try await self.request(
+                "browse",
+                body: ["browseId": "FEmusic_liked_albums"],
+                ttl: APICache.TTL.library
+            )
+            let firstPage = PlaylistParser.parseLibraryAlbumsPage(albumsData)
+            if !firstPage.isRecognized,
+               firstPage.albums.isEmpty,
+               firstPage.nextPages.isEmpty
+            {
+                self.logger.warning("Saved albums endpoint returned an unrecognized response, falling back to landing preview")
+                return (fallbackAlbums, .landingFallback)
+            }
+
+            var dedicatedAlbums = firstPage.albums
+            var pendingCursors = firstPage.nextPages
+            var requestedCursors = Set<String>()
+            var completedPagination = firstPage.isRecognized
+
+            while !pendingCursors.isEmpty {
+                let cursor = pendingCursors.removeFirst()
+                guard requestedCursors.insert(cursor).inserted else {
+                    completedPagination = false
+                    self.logger.warning("Saved albums pagination repeated a continuation token, keeping partial results")
+                    continue
+                }
+
+                do {
+                    let continuationData = try await self.requestContinuation(
+                        cursor,
+                        ttl: APICache.TTL.library,
+                        authPolicy: .required
+                    )
+                    let page = PlaylistParser.parseLibraryAlbumsContinuation(continuationData)
+                    if !page.isRecognized {
+                        completedPagination = false
+                        self.logger.warning("Saved albums continuation was only partially recognized, keeping partial results")
+                    }
+                    dedicatedAlbums = PlaylistParser.mergedLibraryAlbums(
+                        dedicated: dedicatedAlbums,
+                        fallback: page.albums
+                    )
+                    pendingCursors.append(contentsOf: page.nextPages)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    completedPagination = false
+                    self.logger.warning("Saved albums continuation failed, keeping \(dedicatedAlbums.count) loaded albums: \(error.localizedDescription)")
+                }
+            }
+
+            if dedicatedAlbums.isEmpty {
+                if completedPagination {
+                    self.logger.info("Saved albums endpoint returned an authoritative empty collection")
+                    return ([], .dedicated)
+                }
+
+                return (fallbackAlbums, .partial)
+            }
+
+            if completedPagination {
+                return (dedicatedAlbums, .dedicated)
+            }
+
+            return (
+                PlaylistParser.mergedLibraryAlbums(
+                    dedicated: dedicatedAlbums,
+                    fallback: fallbackAlbums
+                ),
+                .partial
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            self.logger.warning("Saved albums endpoint failed, falling back to landing preview: \(error.localizedDescription)")
+            return (fallbackAlbums, .landingFallback)
         }
     }
 
@@ -739,14 +895,17 @@ final class YTMusicClient: YTMusicClientProtocol {
             "browseId": LikedMusicPlaylist.browseID,
         ]
 
+        let generation = self.continuationGeneration
         let data = try await request("browse", body: body, ttl: APICache.TTL.library)
 
         // Use playlist parser since VLLM returns playlist format
         let playlistResponse = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: LikedMusicPlaylist.id)
 
         // Store continuation token for pagination
-        self.likedSongsContinuationToken = playlistResponse.continuationToken
-        let hasMore = playlistResponse.hasMore
+        if generation == self.continuationGeneration {
+            self.likedSongsContinuationToken = playlistResponse.continuationToken
+        }
+        let hasMore = generation == self.continuationGeneration && playlistResponse.hasMore
 
         // Convert to LikedSongsResponse format
         let response = LikedSongsResponse(
@@ -767,11 +926,16 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         self.logger.info("Fetching liked songs continuation")
+        let generation = self.continuationGeneration
 
         do {
-            let continuationData = try await requestContinuation(token)
+            let continuationData = try await requestContinuation(token, authPolicy: .required)
             // Use playlist continuation parser since VLLM returns playlist format
             let playlistResponse = PlaylistParser.parsePlaylistContinuation(continuationData)
+            guard generation == self.continuationGeneration else {
+                self.logger.info("Discarding stale liked songs continuation after session reset")
+                return nil
+            }
             self.likedSongsContinuationToken = playlistResponse.continuationToken
             let hasMore = playlistResponse.hasMore
 
@@ -857,11 +1021,12 @@ final class YTMusicClient: YTMusicClientProtocol {
     }
 
     /// Fetches a batch of playlist tracks using the provided continuation token.
-    func getPlaylistContinuation(token: String) async throws -> PlaylistContinuationResponse {
+    func getPlaylistContinuation(token: String, requiresAuth: Bool) async throws -> PlaylistContinuationResponse {
         self.logger.info("Fetching playlist continuation")
 
         do {
-            let continuationData = try await requestContinuation(token)
+            let authPolicy: RequestAuthPolicy? = requiresAuth ? .required : nil
+            let continuationData = try await requestContinuation(token, authPolicy: authPolicy)
             let response = PlaylistParser.parsePlaylistContinuation(continuationData)
             let hasMore = response.hasMore
 
@@ -946,13 +1111,25 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         let albumSections = detail.orderedSections.compactMap {
-            if case let .albums(albums) = $0.content { albums } else { nil }
+            if case let .albums(albums) = $0.content {
+                albums
+            } else {
+                nil
+            }
         }
         let playlistSections = detail.orderedSections.compactMap {
-            if case let .playlists(playlists) = $0.content { playlists } else { nil }
+            if case let .playlists(playlists) = $0.content {
+                playlists
+            } else {
+                nil
+            }
         }
         let artistSections = detail.orderedSections.compactMap {
-            if case let .artists(artists) = $0.content { artists } else { nil }
+            if case let .artists(artists) = $0.content {
+                artists
+            } else {
+                nil
+            }
         }
         let artistCount = artistSections.reduce(0) { $0 + $1.count }
         let playlistCount = playlistSections.reduce(0) { $0 + $1.count }
@@ -1251,10 +1428,15 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Used for account switching functionality.
     /// - Returns: AccountsListResponse containing all available accounts
     /// - Throws: YTMusicError if not authenticated or request fails
-    func fetchAccountsList() async throws -> AccountsListResponse {
+    func fetchAccountsList(allowGuestMode: Bool) async throws -> AccountsListResponse {
         self.logger.info("Fetching accounts list")
 
-        let data = try await request("account/accounts_list", body: [:])
+        let data = try await request(
+            "account/accounts_list",
+            body: [:],
+            authPolicy: .required,
+            allowGuestAuthentication: allowGuestMode
+        )
         let response = AccountsListParser.parse(data)
 
         self.logger.info("Accounts list loaded: \(response.accounts.count) accounts")
@@ -1426,6 +1608,32 @@ final class YTMusicClient: YTMusicClientProtocol {
         APICache.shared.invalidateMutationCaches()
     }
 
+    /// Removes a song from a playlist.
+    /// - Parameters:
+    ///   - videoId: The video ID to remove
+    ///   - setVideoId: The playlist-item-specific identifier YouTube Music assigns to
+    ///     each track occurrence, required to remove the correct instance (a song can
+    ///     appear more than once in a playlist).
+    ///   - playlistId: The playlist ID to remove from
+    func removeSongFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {
+        self.logger.info("Removing song \(videoId) from playlist \(playlistId)")
+
+        let cleanPlaylistId = playlistId.hasPrefix("VL") ? String(playlistId.dropFirst(2)) : playlistId
+        let body: [String: Any] = [
+            "playlistId": cleanPlaylistId,
+            "actions": [[
+                "action": "ACTION_REMOVE_VIDEO",
+                "removedVideoId": videoId,
+                "setVideoId": setVideoId,
+            ]],
+        ]
+
+        _ = try await self.request("browse/edit_playlist", body: body)
+        self.logger.info("Successfully removed song \(videoId) from playlist \(playlistId)")
+
+        APICache.shared.invalidateMutationCaches()
+    }
+
     /// Removes a playlist from the user's library using the like/removelike endpoint.
     /// This is equivalent to the "Remove from Library" action in YouTube Music.
     /// - Parameter playlistId: The playlist ID to remove from library
@@ -1553,19 +1761,146 @@ final class YTMusicClient: YTMusicClientProtocol {
 
     // MARK: - Private Methods
 
+    private enum RequestAuthPolicy {
+        case optional
+        case required
+    }
+
+    private struct RequestAuthHeaders {
+        let headers: [String: String]
+        let authenticated: Bool
+        let authIdentityGeneration: UInt64?
+        let allowsGuestAuthentication: Bool
+    }
+
+    private func authPolicy(forEndpoint endpoint: String, body: [String: Any]) -> RequestAuthPolicy {
+        if Self.authRequiredActionEndpoints.contains(endpoint) {
+            return .required
+        }
+
+        if endpoint == "browse", let browseId = body["browseId"] as? String {
+            if Self.authRequiredBrowseIds.contains(browseId)
+                || browseId == LikedMusicPlaylist.browseID
+                || browseId.hasPrefix("MPLAUC")
+                || browseId == Playlist.uploadedSongsBrowseID
+            {
+                return .required
+            }
+        }
+
+        return .optional
+    }
+
+    private func buildRequestHeaders(
+        authPolicy: RequestAuthPolicy,
+        allowGuestAuthentication: Bool
+    ) async throws -> RequestAuthHeaders {
+        let canAuthenticate = self.canUseAuthenticatedSession(allowGuestAuthentication: allowGuestAuthentication)
+        if canAuthenticate {
+            let authIdentityGeneration = self.authService.accountIdentityGeneration
+            do {
+                let headers = try await self.buildAuthHeaders()
+                try self.validateAuthIdentity(
+                    authenticated: true,
+                    generation: authIdentityGeneration,
+                    allowGuestAuthentication: allowGuestAuthentication
+                )
+                return RequestAuthHeaders(
+                    headers: headers,
+                    authenticated: true,
+                    authIdentityGeneration: authIdentityGeneration,
+                    allowsGuestAuthentication: allowGuestAuthentication
+                )
+            } catch {
+                if error is CancellationError {
+                    throw error
+                }
+                try self.validateAuthIdentity(
+                    authenticated: true,
+                    generation: authIdentityGeneration,
+                    allowGuestAuthentication: allowGuestAuthentication
+                )
+                self.authService.sessionExpired(ifIdentityGenerationMatches: authIdentityGeneration)
+                throw YTMusicError.authExpired
+            }
+        } else if authPolicy == .required {
+            throw YTMusicError.notAuthenticated
+        }
+
+        return RequestAuthHeaders(
+            headers: self.buildUnauthenticatedHeaders(),
+            authenticated: false,
+            authIdentityGeneration: nil,
+            allowsGuestAuthentication: false
+        )
+    }
+
+    private func buildUnauthenticatedHeaders() -> [String: String] {
+        let origin = WebKitManager.origin
+        return [
+            "Origin": origin,
+            "Referer": origin,
+            "Content-Type": "application/json",
+        ]
+    }
+
+    private func cacheScope(authenticated: Bool) -> String {
+        guard authenticated else { return "guest" }
+        if let accountScope = self.accountScopeProvider?(), !accountScope.isEmpty {
+            return accountScope
+        }
+        let brandId = self.brandIdProvider?() ?? ""
+        return brandId.isEmpty ? "primary" : brandId
+    }
+
+    private static let authRequiredBrowseIds: Set<String> = [
+        "FEmusic_liked_playlists",
+        "FEmusic_liked_albums",
+        "FEmusic_liked_videos",
+        "FEmusic_history",
+        "FEmusic_library_landing",
+        "FEmusic_library_artists",
+        "FEmusic_library_corpus_artists",
+        "FEmusic_library_corpus_track_artists",
+        "FEmusic_library_songs",
+        "FEmusic_recently_played",
+        "FEmusic_offline",
+        "FEmusic_library_privately_owned_landing",
+        "FEmusic_library_privately_owned_tracks",
+        "FEmusic_library_privately_owned_albums",
+        "FEmusic_library_privately_owned_artists",
+    ]
+
+    private static let authRequiredActionEndpoints: Set<String> = [
+        "like/like",
+        "like/dislike",
+        "like/removelike",
+        "feedback",
+        "subscription/subscribe",
+        "subscription/unsubscribe",
+        "playlist/get_add_to_playlist",
+        "browse/edit_playlist",
+        "playlist/create",
+        "playlist/delete",
+        "account/account_menu",
+        "account/accounts_list",
+        "notification/get_notification_menu",
+        "stats/watchtime",
+    ]
+
     /// Builds authentication headers for API requests.
     private func buildAuthHeaders() async throws -> [String: String] {
-        // Log available cookies for debugging auth issues
-        let allCookies = await webKitManager.getAllCookies()
-        let youtubeCookies = await webKitManager.getCookies(for: "youtube.com")
-        self.logger.debug("Building auth headers - total cookies: \(allCookies.count), youtube.com cookies: \(youtubeCookies.count)")
+        // Snapshot cookies once per request; deriving the cookie header and SAPISID from
+        // the same snapshot avoids repeated WebKit cookie-store enumerations during API fanout.
+        let authMaterial = await webKitManager.authMaterial(for: "youtube.com")
+        self.logger.debug("Building auth headers - total cookies: \(authMaterial.totalCookieCount), youtube.com cookies: \(authMaterial.domainCookieCount)")
 
-        guard let cookieHeader = await webKitManager.cookieHeader(for: "youtube.com") else {
+        guard let cookieHeader = authMaterial.cookieHeader else {
             self.logger.error("No cookies found for youtube.com domain")
             throw YTMusicError.notAuthenticated
         }
 
-        guard let sapisid = await webKitManager.getSAPISID() else {
+        guard let sapisid = authMaterial.sapisid else {
             self.logger.error("SAPISID cookie not found or expired")
             throw YTMusicError.authExpired
         }
@@ -1592,18 +1927,22 @@ final class YTMusicClient: YTMusicClientProtocol {
     }
 
     /// Builds the standard context payload.
-    /// Includes `onBehalfOfUser` when a brand account is selected.
-    private func buildContext() -> [String: Any] {
+    /// Includes `onBehalfOfUser` only for authenticated requests when a brand account is selected.
+    private func buildContext(authenticated: Bool) -> [String: Any] {
         var userDict: [String: Any] = [
             "lockedSafetyMode": false,
         ]
 
-        // Add brand account ID if one is selected
-        if let brandId = self.brandIdProvider?() {
+        // Add brand account ID only when this request is actually authenticated.
+        // Signed-out requests must look like a normal public YouTube Music web
+        // request and must not carry a stale delegated identity in the body.
+        if authenticated, let brandId = self.brandIdProvider?() {
             userDict["onBehalfOfUser"] = brandId
             self.logger.debug("Using brand account: \(brandId)")
-        } else {
+        } else if authenticated {
             self.logger.debug("Using primary account (no brand ID)")
+        } else {
+            self.logger.debug("Using signed-out YouTube Music context")
         }
 
         return [
@@ -1626,35 +1965,52 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
     }
 
-    /// Makes an authenticated request to the API with optional caching and retry.
-    private func request(_ endpoint: String, body: [String: Any], ttl: TimeInterval? = nil) async throws -> [String: Any] {
-        // Build request body with context so cache keys reflect the actual request
-        var fullBody = body
-        fullBody["context"] = self.buildContext()
-
-        // Generate stable cache key from endpoint, full body, and brand account ID
-        // Brand ID must be in cache key to prevent returning cached data from other accounts
-        let brandId = self.brandIdProvider?() ?? ""
-        let cacheKey = APICache.stableCacheKey(endpoint: endpoint, body: fullBody, brandId: brandId)
-        self.logger.debug(
-            "Request \(endpoint): brandId=\(brandId.isEmpty ? "primary" : brandId), cacheKey=\(cacheKey)"
+    /// Makes a request to the API with optional authentication, caching, and retry.
+    private func request(
+        _ endpoint: String,
+        body: [String: Any],
+        ttl: TimeInterval? = nil,
+        authPolicy explicitAuthPolicy: RequestAuthPolicy? = nil,
+        allowGuestAuthentication: Bool = false
+    ) async throws -> [String: Any] {
+        // Account and guest-mode transitions invalidate the shared API cache.
+        // Capture its generation before any auth/network await so stale responses
+        // cannot repopulate the cache after a session reset.
+        let cacheGeneration = APICache.shared.generation
+        let authPolicy = explicitAuthPolicy ?? self.authPolicy(forEndpoint: endpoint, body: body)
+        let requestAuth = try await self.buildRequestHeaders(
+            authPolicy: authPolicy,
+            allowGuestAuthentication: allowGuestAuthentication
         )
 
-        // Check cache first
+        // Build request body with context so cache keys reflect the actual request.
+        var fullBody = body
+        fullBody["context"] = self.buildContext(authenticated: requestAuth.authenticated)
+
+        let cacheScope = self.cacheScope(authenticated: requestAuth.authenticated)
+        let cacheKey = APICache.stableCacheKey(endpoint: endpoint, body: fullBody, brandId: cacheScope)
+        self.logger.debug("Request \(endpoint): cacheKey=\(cacheKey)")
+
+        // Check cache first.
         if ttl != nil, let cached = APICache.shared.get(key: cacheKey) {
-            self.logger.debug(
-                "Cache hit for \(endpoint) (brandId=\(brandId.isEmpty ? "primary" : brandId))"
-            )
+            self.logger.debug("Cache hit for \(endpoint)")
             return cached
         }
 
-        // Execute with retry policy
+        // Execute with retry policy.
         let json = try await RetryPolicy.default.execute { [self] in
-            try await self.performRequest(endpoint, fullBody: fullBody)
+            try await self.performRequest(
+                endpoint,
+                fullBody: fullBody,
+                requestAuth: requestAuth
+            )
         }
 
-        // Cache response if TTL specified
-        if let ttl {
+        // Cache only if no account/guest transition happened while the
+        // request was in flight. YTMusicClient and APICache are both
+        // @MainActor, so this comparison and the synchronous set below are
+        // atomic relative to invalidateAll().
+        if let ttl, cacheGeneration == APICache.shared.generation {
             APICache.shared.set(key: cacheKey, data: json, ttl: ttl)
         }
 
@@ -1662,20 +2018,39 @@ final class YTMusicClient: YTMusicClientProtocol {
     }
 
     /// Performs the actual network request.
-    private func performRequest(_ endpoint: String, fullBody: [String: Any]) async throws -> [String:
-        Any]
-    {
-        let urlString = "\(Self.baseURL)/\(endpoint)?key=\(Self.apiKey)&prettyPrint=false"
-        guard let url = URL(string: urlString) else {
-            throw YTMusicError.unknown(message: "Invalid URL: \(urlString)")
+    private func performRequest(
+        _ endpoint: String,
+        fullBody: [String: Any],
+        requestAuth: RequestAuthHeaders
+    ) async throws -> [String: Any] {
+        let authenticated = requestAuth.authenticated
+        let authIdentityGeneration = requestAuth.authIdentityGeneration
+        let allowGuestAuthentication = requestAuth.allowsGuestAuthentication
+        try self.validateAuthIdentity(
+            authenticated: authenticated,
+            generation: authIdentityGeneration,
+            allowGuestAuthentication: allowGuestAuthentication
+        )
+        let apiKey = try await self.resolveAPIKey()
+        try self.validateAuthIdentity(
+            authenticated: authenticated,
+            generation: authIdentityGeneration,
+            allowGuestAuthentication: allowGuestAuthentication
+        )
+        var components = URLComponents(string: "\(Self.baseURL)/\(endpoint)")
+        components?.queryItems = [
+            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "prettyPrint", value: "false"),
+        ]
+        guard let url = components?.url else {
+            throw YTMusicError.unknown(message: "Invalid API URL for endpoint: \(endpoint)")
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.httpShouldHandleCookies = authenticated
 
-        // Add auth headers
-        let headers = try await self.buildAuthHeaders()
-        for (key, value) in headers {
+        for (key, value) in requestAuth.headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
@@ -1694,6 +2069,11 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         // Perform network I/O off the main thread
         let result = try await Self.performNetworkRequest(request: request, session: self.session)
+        try self.validateAuthIdentity(
+            authenticated: authenticated,
+            generation: authIdentityGeneration,
+            allowGuestAuthentication: allowGuestAuthentication
+        )
 
         // Handle errors back on main actor
         switch result {
@@ -1708,8 +2088,13 @@ final class YTMusicClient: YTMusicClientProtocol {
             return json
         case let .authError(statusCode):
             self.logger.error("Auth error: HTTP \(statusCode)")
-            self.authService.sessionExpired()
-            throw YTMusicError.authExpired
+            if authenticated {
+                if let authIdentityGeneration {
+                    self.authService.sessionExpired(ifIdentityGenerationMatches: authIdentityGeneration)
+                }
+                throw YTMusicError.authExpired
+            }
+            throw YTMusicError.notAuthenticated
         case let .httpError(statusCode):
             self.logger.error("API error: HTTP \(statusCode)")
             throw YTMusicError.apiError(
@@ -1717,8 +2102,37 @@ final class YTMusicClient: YTMusicClientProtocol {
                 code: statusCode
             )
         case let .networkError(error):
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                throw CancellationError()
+            }
             throw YTMusicError.networkError(underlying: error)
         }
+    }
+
+    private func canUseAuthenticatedSession(allowGuestAuthentication: Bool) -> Bool {
+        self.authService.hasPersonalAccount
+            || (allowGuestAuthentication
+                && self.authService.state.isLoggedIn
+                && self.authService.isGuestModeEnabled)
+    }
+
+    private func validateAuthIdentity(
+        authenticated: Bool,
+        generation: UInt64?,
+        allowGuestAuthentication: Bool
+    ) throws {
+        guard authenticated else { return }
+        guard let generation,
+              generation == self.authService.accountIdentityGeneration,
+              self.canUseAuthenticatedSession(allowGuestAuthentication: allowGuestAuthentication)
+        else {
+            throw CancellationError()
+        }
+    }
+
+    /// Resolves the current YouTube Music web client API key without storing a concrete key in source.
+    private func resolveAPIKey() async throws -> String {
+        try await self.apiKeyResolver.resolve()
     }
 
     // MARK: - Nonisolated Network Helper
@@ -1760,5 +2174,112 @@ final class YTMusicClient: YTMusicClientProtocol {
         } catch {
             return .networkError(error)
         }
+    }
+}
+
+// MARK: - YTMusicAPIKeyResolver
+
+/// Resolves the YouTube Music web client's current Innertube API key without storing it in source.
+@MainActor
+final class YTMusicAPIKeyResolver {
+    nonisolated static let environmentVariable = "KASET_YTMUSIC_API_KEY"
+    nonisolated static let defaultWebClientURL = URL(string: "https://music.youtube.com")!
+
+    private let session: URLSession
+    private let environment: @Sendable (String) -> String?
+    private let webClientURL: URL
+    private var cachedAPIKey: String?
+    private var inFlightResolve: Task<String, any Error>?
+
+    init(
+        session: URLSession = .shared,
+        webClientURL: URL = defaultWebClientURL,
+        environment: @escaping @Sendable (String) -> String? = { ProcessInfo.processInfo.environment[$0] }
+    ) {
+        self.session = session
+        self.webClientURL = webClientURL
+        self.environment = environment
+    }
+
+    func resolve() async throws -> String {
+        if let cachedAPIKey {
+            return cachedAPIKey
+        }
+
+        if let override = self.environment(Self.environmentVariable),
+           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.cachedAPIKey = trimmed
+            return trimmed
+        }
+
+        if let inFlightResolve {
+            return try await inFlightResolve.value
+        }
+
+        let task = Task { [session, webClientURL] in
+            try await Self.fetchAPIKey(session: session, webClientURL: webClientURL)
+        }
+        self.inFlightResolve = task
+
+        do {
+            let apiKey = try await task.value
+            self.cachedAPIKey = apiKey
+            self.inFlightResolve = nil
+            return apiKey
+        } catch {
+            self.inFlightResolve = nil
+            throw error
+        }
+    }
+
+    private static func fetchAPIKey(session: URLSession, webClientURL: URL) async throws -> String {
+        do {
+            var request = URLRequest(url: webClientURL)
+            request.setValue(APISessionConfiguration.userAgent, forHTTPHeaderField: "User-Agent")
+            // The Innertube API key is public and needs no authentication. Do NOT send the user's
+            // cookie jar for this fetch: a stale/partial consent cookie lands the request on the EU
+            // consent interstitial (consent.youtube.com), whose HTML has no key, breaking every API
+            // call with "Data Error". A cookieless request with a pre-accepted SOCS consent cookie
+            // bypasses the consent wall and returns the real web client page.
+            request.httpShouldHandleCookies = false
+            request.setValue("SOCS=CAI", forHTTPHeaderField: "Cookie")
+            let (data, response) = try await session.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200 ... 399).contains(httpResponse.statusCode)
+            {
+                throw YTMusicError.apiError(
+                    message: "Could not load YouTube Music web client configuration",
+                    code: httpResponse.statusCode
+                )
+            }
+
+            guard let html = String(data: data, encoding: .utf8),
+                  let apiKey = Self.extractInnertubeAPIKey(from: html)
+            else {
+                throw YTMusicError.parseError(message: "Could not resolve YouTube Music API configuration")
+            }
+
+            return apiKey
+        } catch let error as YTMusicError {
+            throw error
+        } catch {
+            throw YTMusicError.networkError(underlying: error)
+        }
+    }
+
+    static func extractInnertubeAPIKey(from html: String) -> String? {
+        let pattern = #""INNERTUBE_API_KEY"\s*:\s*"([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                  in: html,
+                  range: NSRange(html.startIndex ..< html.endIndex, in: html)
+              ),
+              let range = Range(match.range(at: 1), in: html)
+        else {
+            return nil
+        }
+        return String(html[range])
     }
 }

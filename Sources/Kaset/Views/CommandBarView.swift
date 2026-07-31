@@ -31,6 +31,7 @@ struct CommandBarView: View {
         isPresented: Binding<Bool>,
         navigationSelection: Binding<NavigationItem?>,
         searchFocusTrigger: Binding<Bool>,
+        sidebarNavigationReselectGenerations: Binding<[NavigationItem: Int]> = .constant([:]),
         searchViewModel: SearchViewModel? = nil
     ) {
         self.client = client
@@ -41,7 +42,11 @@ struct CommandBarView: View {
             client: client,
             playerService: playerService,
             searchRouter: { query in
+                let alreadyOnSearch = navigationSelection.wrappedValue == .search
                 navigationSelection.wrappedValue = .search
+                if alreadyOnSearch {
+                    sidebarNavigationReselectGenerations.wrappedValue[.search, default: 0] += 1
+                }
                 searchViewModel?.selectedFilter = .all
                 searchViewModel?.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let searchViewModel, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -62,7 +67,7 @@ struct CommandBarView: View {
     var body: some View {
         @Bindable var viewModel = self.viewModel
 
-        GlassEffectContainer(spacing: 0) {
+        CompatGlassContainer(spacing: 0) {
             VStack(spacing: 0) {
                 // Input field
                 HStack(spacing: 12) {
@@ -113,10 +118,10 @@ struct CommandBarView: View {
                 }
             }
             .frame(width: 500)
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
-            .glassEffectID("commandBar", in: self.commandBarNamespace)
+            .compatGlass(interactive: true, in: .rect(cornerRadius: 20))
+            .compatGlassID("commandBar", in: self.commandBarNamespace)
         }
-        .glassEffectTransition(.materialize)
+        .compatGlassTransition(.materialize)
         .accessibilityIdentifier(AccessibilityID.MainWindow.commandBar)
         .onAppear {
             viewModel.handleAppear()
@@ -269,6 +274,7 @@ private struct SuggestionChip: View {
     }
 }
 
+@available(macOS 26.0, *)
 #Preview {
     @Previewable @State var isPresented = true
     @Previewable @State var navigationSelection: NavigationItem?

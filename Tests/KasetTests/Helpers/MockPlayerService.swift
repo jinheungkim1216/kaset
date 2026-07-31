@@ -12,7 +12,19 @@ final class MockPlayerService: PlayerServiceProtocol {
     var repeatMode: PlayerService.RepeatMode = .off
     var queue: [Song] = []
     var currentIndex = 0
+    var activePlaybackQueueIndex: Int? {
+        guard let currentTrack,
+              queue[safe: currentIndex]?.videoId == currentTrack.videoId
+        else { return nil }
+        return self.currentIndex
+    }
+
     var showMiniPlayer = false
+    var isMiniPlayerVisible = false
+    var miniPlayerMode: PlayerService.MiniPlayerMode = .auxiliary
+    var miniPlayerPanel: PlayerService.MiniPlayerPanel = .compact
+    var shouldRestoreMainWindowWhenMiniPlayerCloses = false
+    var miniPlayerMainWindowRestoreRequest = false
     var currentTrackLikeStatus: LikeStatus = .indifferent
     var currentTrackInLibrary = false
 
@@ -36,13 +48,18 @@ final class MockPlayerService: PlayerServiceProtocol {
     private(set) var playQueueCallCount = 0
     private(set) var likeCallCount = 0
     private(set) var dislikeCallCount = 0
+    private var musicPlaybackIntentGeneration: UInt64 = 0
+    private var musicPlaybackReservationGeneration: UInt64 = 0
+    private var queueMutationGeneration = 0
 
     func play(videoId: String) async {
+        self.advancePlaybackOwnership()
         self.playedVideoIds.append(videoId)
         self.state = .playing
     }
 
     func play(song: Song) async {
+        self.advancePlaybackOwnership()
         self.playedSongs.append(song)
         self.currentTrack = song
         self.state = .playing
@@ -57,24 +74,29 @@ final class MockPlayerService: PlayerServiceProtocol {
     }
 
     func pause() async {
+        self.advancePlaybackOwnership()
         self.pauseCallCount += 1
         self.state = .paused
     }
 
     func resume() async {
+        self.advancePlaybackOwnership()
         self.resumeCallCount += 1
         self.state = .playing
     }
 
     func next() async {
+        self.advancePlaybackOwnership()
         self.nextCallCount += 1
     }
 
     func previous() async {
+        self.advancePlaybackOwnership()
         self.previousCallCount += 1
     }
 
     func seek(to time: TimeInterval) async {
+        self.advancePlaybackOwnership()
         self.progress = time
     }
 
@@ -87,6 +109,7 @@ final class MockPlayerService: PlayerServiceProtocol {
     }
 
     func toggleShuffle() {
+        self.advancePlaybackOwnership()
         self.shuffleEnabled.toggle()
     }
 
@@ -101,12 +124,62 @@ final class MockPlayerService: PlayerServiceProtocol {
         }
     }
 
+    func openMiniPlayer(mode: PlayerService.MiniPlayerMode) {
+        self.miniPlayerMode = mode
+        self.isMiniPlayerVisible = true
+        self.shouldRestoreMainWindowWhenMiniPlayerCloses = mode == .switchFromMainWindow
+        self.miniPlayerMainWindowRestoreRequest = false
+    }
+
+    @discardableResult
+    func toggleMiniPlayer(mode: PlayerService.MiniPlayerMode) -> Bool {
+        if self.isMiniPlayerVisible, self.miniPlayerMode == mode {
+            return self.closeMiniPlayer()
+        }
+        self.openMiniPlayer(mode: mode)
+        return false
+    }
+
+    @discardableResult
+    func closeMiniPlayer() -> Bool {
+        let shouldRestore = self.shouldRestoreMainWindowWhenMiniPlayerCloses
+        self.isMiniPlayerVisible = false
+        self.miniPlayerMode = .auxiliary
+        self.shouldRestoreMainWindowWhenMiniPlayerCloses = false
+        self.miniPlayerMainWindowRestoreRequest = shouldRestore
+        return shouldRestore
+    }
+
+    func consumeMiniPlayerMainWindowRestoreRequest() -> Bool {
+        let shouldRestore = self.miniPlayerMainWindowRestoreRequest
+        self.miniPlayerMainWindowRestoreRequest = false
+        return shouldRestore
+    }
+
+    func toggleMiniPlayerPanel() {
+        self.miniPlayerPanel = switch self.miniPlayerPanel {
+        case .compact:
+            .expanded
+        case .expanded:
+            .compact
+        case .lyrics:
+            .expanded
+        }
+    }
+
     func stop() async {
+        self.musicPlaybackIntentGeneration &+= 1
+        self.musicPlaybackReservationGeneration &+= 1
+        self.queueMutationGeneration += 1
         self.state = .idle
         self.currentTrack = nil
     }
 
     func playQueue(_ songs: [Song], startingAt index: Int) async {
+        guard !songs.isEmpty else { return }
+        self.musicPlaybackIntentGeneration &+= 1
+        self.musicPlaybackReservationGeneration &+= 1
+        self.queueMutationGeneration += 1
         self.playQueueCallCount += 1
         self.queue = songs
         let safeIndex = min(max(index, 0), max(0, songs.count - 1))
@@ -115,14 +188,87 @@ final class MockPlayerService: PlayerServiceProtocol {
         self.state = .playing
     }
 
+    private func advancePlaybackOwnership() {
+        self.musicPlaybackIntentGeneration &+= 1
+        self.musicPlaybackReservationGeneration &+= 1
+    }
+
+    func reserveMusicPlaybackIntent() -> MusicPlaybackReservation {
+        self.musicPlaybackReservationGeneration &+= 1
+        return MusicPlaybackReservation(
+            playbackGeneration: self.musicPlaybackIntentGeneration,
+            reservationGeneration: self.musicPlaybackReservationGeneration,
+            queueMutationGeneration: self.queueMutationGeneration,
+            queueEntryID: nil,
+            videoID: self.currentTrack?.videoId
+        )
+    }
+
+    func acceptsMusicPlaybackReservation(_ reservation: MusicPlaybackReservation) -> Bool {
+        reservation.playbackGeneration == self.musicPlaybackIntentGeneration
+            && reservation.reservationGeneration == self.musicPlaybackReservationGeneration
+            && reservation.videoID == self.currentTrack?.videoId
+    }
+
+    func claimMusicPlaybackIntent(_ reservation: MusicPlaybackReservation) -> MusicPlaybackIntent? {
+        guard reservation.playbackGeneration == self.musicPlaybackIntentGeneration,
+              reservation.reservationGeneration == self.musicPlaybackReservationGeneration
+        else { return nil }
+        self.musicPlaybackIntentGeneration &+= 1
+        self.musicPlaybackReservationGeneration &+= 1
+        return MusicPlaybackIntent(generation: self.musicPlaybackIntentGeneration)
+    }
+
+    func acceptsMusicPlaybackIntent(_ intent: MusicPlaybackIntent) -> Bool {
+        intent.generation == self.musicPlaybackIntentGeneration
+    }
+
+    func reserveQueueMutation() -> Int {
+        self.queueMutationGeneration
+    }
+
+    func acceptsQueueMutation(_ generation: Int) -> Bool {
+        generation == self.queueMutationGeneration
+    }
+
+    func playQueue(
+        _ songs: [Song],
+        startingAt index: Int,
+        deferringSmartShuffleFill: Bool,
+        intent: MusicPlaybackIntent
+    ) async -> Int? {
+        guard self.acceptsMusicPlaybackIntent(intent), !songs.isEmpty else { return nil }
+        self.queueMutationGeneration += 1
+        self.playQueueCallCount += 1
+        self.queue = songs
+        self.currentIndex = min(max(index, 0), max(0, songs.count - 1))
+        self.currentTrack = songs[safe: self.currentIndex]
+        self.state = songs.isEmpty ? .idle : .playing
+        return deferringSmartShuffleFill ? self.queueMutationGeneration : nil
+    }
+
     func playWithRadio(song: Song) async {
+        self.advancePlaybackOwnership()
+        self.queueMutationGeneration += 1
         self.currentTrack = song
         self.state = .playing
     }
 
-    func playWithMix(playlistId _: String, startVideoId _: String?) async {}
+    func playWithMix(
+        playlistId _: String,
+        startVideoId _: String?,
+        intent suppliedIntent: MusicPlaybackIntent?
+    ) async {
+        if let suppliedIntent {
+            guard self.acceptsMusicPlaybackIntent(suppliedIntent) else { return }
+        } else {
+            self.advancePlaybackOwnership()
+        }
+    }
 
     func clearQueue() {
+        self.advancePlaybackOwnership()
+        self.queueMutationGeneration += 1
         self.clearQueueCallCount += 1
         if let currentTrack = self.currentTrack {
             self.queue = [currentTrack]
@@ -134,6 +280,7 @@ final class MockPlayerService: PlayerServiceProtocol {
     }
 
     func shuffleQueue() {
+        self.advancePlaybackOwnership()
         self.shuffleQueueCallCount += 1
         self.queue = Array(self.queue.reversed())
     }
