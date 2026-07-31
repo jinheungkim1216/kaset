@@ -11,6 +11,28 @@ struct DebouncerTests {
         }
     }
 
+    /// Polls until `condition` holds, or gives up after `timeout`.
+    ///
+    /// The positive assertions below must not depend on a fixed sleep being
+    /// longer than the debounce interval: on a loaded CI runner a 50 ms
+    /// debounce plus task scheduling routinely exceeds the 150 ms these tests
+    /// used to wait, which failed the run with `count == 0`.
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        pollInterval: Duration = .milliseconds(10),
+        _ condition: () async -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+
+        while await !condition() {
+            guard clock.now < deadline else { return await condition() }
+            try? await Task.sleep(for: pollInterval)
+        }
+
+        return true
+    }
+
     @Test("Multiple rapid bumps within the window collapse to one action")
     func collapsesRapidBumps() async throws {
         let counter = Counter()
@@ -22,7 +44,11 @@ struct DebouncerTests {
             await debouncer.bump()
         }
 
-        try await Task.sleep(for: .milliseconds(150))
+        let fired = await self.waitUntil { await counter.value >= 1 }
+        #expect(fired)
+
+        // Quiet window: a failure to collapse would land the extra calls here.
+        try await Task.sleep(for: .milliseconds(200))
         let count = await counter.value
         #expect(count == 1)
     }
@@ -35,9 +61,12 @@ struct DebouncerTests {
         }
 
         await debouncer.bump()
-        try await Task.sleep(for: .milliseconds(120))
+        let firstFired = await self.waitUntil { await counter.value >= 1 }
+        #expect(firstFired)
+
         await debouncer.bump()
-        try await Task.sleep(for: .milliseconds(120))
+        let secondFired = await self.waitUntil { await counter.value >= 2 }
+        #expect(secondFired)
 
         let count = await counter.value
         #expect(count == 2)
