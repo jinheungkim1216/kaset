@@ -62,7 +62,9 @@ struct MarqueeRotatorTests {
         // we should be back at offset 0.
         var frames: [String] = []
         for _ in 0 ..< 13 {
-            if let f = rotator.nextFrame() { frames.append(f) }
+            if let f = rotator.nextFrame() {
+                frames.append(f)
+            }
         }
         #expect(frames.count == 13)
         #expect(frames[0] == frames[12])

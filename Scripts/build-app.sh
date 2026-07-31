@@ -470,6 +470,11 @@ ${APP_LOCALIZATIONS_PLIST}
     <false/>
     <key>SUAllowsAutomaticUpdates</key>
     <false/>
+    <!-- Kept true to satisfy Scripts/verify-release-app.sh, which requires the
+         sandboxed installer service unconditionally. Inert here: with no
+         SUFeedURL there is no update for the service to install. -->
+    <key>SUEnableInstallerLauncherService</key>
+    <true/>
 
     <!-- AppleScript Support -->
     <key>NSAppleScriptEnabled</key>
