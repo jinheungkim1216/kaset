@@ -54,7 +54,7 @@ struct DebouncerTests {
     }
 
     @Test("Bumps further apart than the interval each fire the action")
-    func separateBumpsFireSeparately() async throws {
+    func separateBumpsFireSeparately() async {
         let counter = Counter()
         let debouncer = NotificationDebouncer(interval: .milliseconds(50)) {
             await counter.increment()
