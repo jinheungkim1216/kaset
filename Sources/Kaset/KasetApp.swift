@@ -75,6 +75,9 @@ struct KasetApp: App {
     /// Current navigation selection for the YouTube (video) experience.
     @State private var youtubeNavigationSelection: YouTubeNavigationItem? = .home
 
+    /// Monotonic command request consumed by `MainWindow` to refresh the active Home feed.
+    @State private var homeRefreshRequestID = 0
+
     /// Whether the command bar is visible.
     @State private var showCommandBar = false
 
@@ -142,12 +145,23 @@ struct KasetApp: App {
         }
 
         // YouTube (video) client — same login, www.youtube.com origin
-        let realYouTubeClient = YouTubeClient(authService: auth, webKitManager: webkit)
+        let realYouTubeClient = YouTubeClient(authService: auth, webKitManager: webkit, askFeatureEnabled: true)
         realYouTubeClient.brandIdProvider = { [weak account] in
             account?.currentBrandId
         }
         realYouTubeClient.accountCacheIdentityProvider = { [weak account] in
             account?.currentAccount?.cacheIdentity
+        }
+        realYouTubeClient.askAccountBindingProvider = { [weak account] in
+            guard let account,
+                  let currentAccount = account.currentAccount,
+                  currentAccount.isPrimary,
+                  account.verifiedAccountId == currentAccount.id,
+                  let scopeID = account.currentAccountScopeID
+            else {
+                return nil
+            }
+            return YouTubeAskAccountBinding(scopeID: scopeID)
         }
         let youtubeClient: YouTubeClientProtocol = if UITestConfig.isUITestMode {
             MockUITestYouTubeClient()
@@ -214,6 +228,7 @@ struct KasetApp: App {
                 MainWindow(
                     navigationSelection: self.$navigationSelection,
                     youtubeNavigationSelection: self.$youtubeNavigationSelection,
+                    homeRefreshRequestID: self.$homeRefreshRequestID,
                     didCompleteStartupPlaybackCleanup: self.$didCompleteStartupPlaybackCleanup,
                     client: self.sharedClient,
                     youtubeClient: self.sharedYouTubeClient
@@ -319,6 +334,9 @@ struct KasetApp: App {
                 }
                 .onChange(of: self.settings.keepMiniPlayerOnTop) { _, _ in
                     MiniPlayerWindowController.shared.syncWindowState()
+                }
+                .onChange(of: self.settings.keepYouTubeVideoOnTop) { _, _ in
+                    YouTubeVideoWindowController.shared.syncWindowState()
                 }
             }
         }
@@ -444,6 +462,14 @@ struct KasetApp: App {
             // Navigation commands - replace default sidebar toggle
             // Each routes to the active source's equivalent destination.
             CommandGroup(replacing: .sidebar) {
+                Button(String(localized: "Refresh")) {
+                    self.homeRefreshRequestID += 1
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!self.canRefreshHome)
+
+                Divider()
+
                 // Home - ⌘1
                 Button(String(localized: "Home")) {
                     if self.settings.appSource == .video {
@@ -507,6 +533,14 @@ struct KasetApp: App {
                     }
                     .keyboardShortcut("k", modifiers: .command)
                 }
+
+                Divider()
+
+                Toggle(String(localized: "Float on Top"), isOn: self.$settings.keepYouTubeVideoOnTop)
+                    .disabled(!YouTubeVideoWindowLevelPolicy.canToggleFloatOnTop(
+                        isFloating: self.youtubePlayerService.surfaceLocation == .floating,
+                        isFullscreenOrTransitioning: self.youtubePlayerService.isWindowFullscreen
+                    ))
             }
 
             // Window menu - show main window
@@ -677,6 +711,15 @@ struct KasetApp: App {
 
     private var shouldDisableTrackNavigationCommands: Bool {
         !self.playbackArbiter.routesMediaKeysToVideo && self.playerService.currentEpisode != nil
+    }
+
+    private var canRefreshHome: Bool {
+        switch self.settings.appSource {
+        case .music:
+            self.navigationSelection == .home
+        case .video:
+            self.youtubeNavigationSelection == .home
+        }
     }
 
     /// Label for repeat mode menu item.
