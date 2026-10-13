@@ -12,12 +12,10 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
 
     @Environment(AuthService.self) private var authService
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
-    @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.playerBarNavigationAction) private var navigationAction
-    @Environment(\.playerBarCurrentAlbumID) private var currentRouteAlbumID
+    @Environment(\.playerBarCurrentAlbumIDs) private var currentRouteAlbumIDs
     @Environment(\.playerBarCurrentArtistID) private var currentRouteArtistID
     @Environment(NowPlayingTracklistProvider.self) private var tracklistProvider: NowPlayingTracklistProvider?
 
@@ -37,6 +35,9 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
     @State private var resolvedAlbum: Playlist?
     @State private var isResolvingArtist = false
     @State private var isResolvingAlbum = false
+    @State private var artistResolutionTask: Task<Void, Never>?
+    @State private var albumResolutionTask: Task<Void, Never>?
+    @State private var airPlayAnchor = AirPlayPickerAnchor()
 
     /// Cached formatted progress string to avoid repeated formatting.
     @State private var formattedProgress: String = "0:00"
@@ -103,6 +104,11 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
         .onChange(of: self.currentSeekIdentity) { _, _ in
             self.clearSeekHold()
         }
+        .onChange(of: self.playerService.isShowingAd) { _, isShowingAd in
+            if isShowingAd {
+                self.clearSeekHold()
+            }
+        }
         .onChange(of: self.playerService.volume) { _, newValue in
             if !self.isAdjustingVolume {
                 self.volumeValue = newValue
@@ -113,6 +119,10 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
             if self.playerService.duration > 0 {
                 self.seekValue = self.playerService.progress / self.playerService.duration
             }
+        }
+        .onDisappear {
+            // A lookup that finishes after the user left would push onto a stack they no longer see.
+            self.cancelNavigationResolution()
         }
     }
 
@@ -227,8 +237,8 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
         VStack(alignment: .leading, spacing: 4) {
             PlayerBarMarqueeText(
                 text: self.playerService.currentTrack?.title ?? String(localized: "Not Playing"),
-                font: .system(size: 13),
-                color: .primary,
+                font: .systemFont(ofSize: 13),
+                color: .labelColor,
                 height: 13,
                 reduceMotion: self.reduceMotion
             )
@@ -277,11 +287,8 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
     }
 
     private var isCurrentAlbumTarget: Bool {
-        guard let currentRouteAlbumID,
-              let album = self.currentAlbumTarget
-        else { return false }
-
-        return album.id == currentRouteAlbumID
+        guard let album = self.currentAlbumTarget else { return false }
+        return PlayerBarCurrentRoute.isAlbum(album, in: self.currentRouteAlbumIDs)
     }
 
     private var showsCurrentAlbumHoverOnly: Bool {
@@ -289,15 +296,12 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
     }
 
     private var isResolvingCurrentRouteAlbum: Bool {
-        self.currentRouteAlbumID != nil && self.currentAlbumTarget == nil
+        !self.currentRouteAlbumIDs.isEmpty && self.currentAlbumTarget == nil
     }
 
     private var isCurrentArtistTarget: Bool {
-        guard let currentRouteArtistID,
-              let artist = self.currentArtistTarget
-        else { return false }
-
-        return artist.id == currentRouteArtistID || artist.publicChannelId == currentRouteArtistID
+        guard let artist = self.currentArtistTarget else { return false }
+        return PlayerBarCurrentRoute.isArtist(artist, routeArtistID: self.currentRouteArtistID)
     }
 
     private var currentAlbumPlaylist: Playlist? {
@@ -332,7 +336,8 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
             description: nil,
             thumbnailURL: album.thumbnailURL ?? track.thumbnailURL,
             trackCount: album.trackCount,
-            author: Artist.inline(name: album.artistsDisplay, namespace: "album-artist")
+            author: Artist.inline(name: album.artistsDisplay, namespace: "album-artist"),
+            libraryTargetId: album.libraryTargetId
         )
     }
 
@@ -382,6 +387,9 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
             if case let .error(message) = playerService.state {
                 self.errorView(message: message)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if self.playerService.isShowingAd {
+                PlayerBarAdIndicator()
+                    .padding(.top, 18)
             } else {
                 PlayerBarProgressLane(
                     fraction: self.displayFraction,
@@ -459,6 +467,11 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
                     .frame(width: 10, height: 16)
                     .foregroundStyle(self.playerService.isAirPlayConnected ? Self.brandAccent : .primary)
                     .contentTransition(.symbolEffect(.replace))
+            }
+            .background {
+                AirPlayPickerAnchorView(anchor: self.airPlayAnchor)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
             .disabled(self.playerService.currentTrack == nil)
 
@@ -542,7 +555,8 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
 
             PlayerBarIconButton(
                 action: self.toggleVolumePopover,
-                accessibilityLabel: String(localized: "Volume")
+                accessibilityLabel: String(localized: "Volume"),
+                accessibilityValue: "\(Int(self.displayedVolume * 100))%"
             ) {
                 Image(systemName: self.volumeIcon)
                     .font(.system(size: 15, weight: .regular))
@@ -550,13 +564,8 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
                     .foregroundStyle(.primary)
                     .contentTransition(.symbolEffect(.replace))
             }
-            .overlay(alignment: .top) {
-                if self.showsVolumeOverlay {
-                    self.volumeOverlay
-                        .offset(y: -176)
-                        .transition(.scale(scale: 0.94, anchor: .bottom).combined(with: .opacity))
-                        .zIndex(1)
-                }
+            .playerBarVolumeOverlay(isPresented: self.$showsVolumeOverlay) {
+                self.volumeOverlay
             }
         }
     }
@@ -602,9 +611,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
                     onEditingChanged: { editing in
                         self.isAdjustingVolume = editing
                         if !editing {
-                            Task {
-                                await self.playerService.setVolume(self.volumeValue)
-                            }
+                            self.playerService.setVolumeImmediately(self.volumeValue)
                         }
                     },
                     onValueChanged: { oldValue, newValue in
@@ -612,9 +619,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
                             if (oldValue > 0 && newValue == 0) || (oldValue < 1 && newValue == 1) {
                                 HapticService.sliderBoundary()
                             }
-                            Task {
-                                await self.playerService.setVolume(newValue)
-                            }
+                            self.playerService.setVolumeImmediately(newValue)
                         }
                     }
                 )
@@ -647,6 +652,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
         self.playerService.currentTrack != nil
             && self.playerService.duration > 0
             && !self.playerService.isCurrentItemLive
+            && !self.playerService.isShowingAd
     }
 
     private var isProgressLoading: Bool {
@@ -819,68 +825,24 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
 
     // MARK: - Current Song Context Menu
 
-    @ViewBuilder
     private func currentSongContextMenu(for track: Song) -> some View {
-        FavoritesContextMenu.menuItem(for: track, manager: self.favoritesManager)
-
-        if self.hasPersonalAccount {
-            Divider()
-
-            LikeDislikeContextMenu(song: track, likeStatusManager: self.likeStatusManager)
-        }
-
-        Divider()
-
-        StartRadioContextMenu.menuItem(for: track, playerService: self.playerService)
-
-        if self.hasPersonalAccount {
-            Divider()
-
-            Button {
-                self.playerService.toggleLibraryStatus()
-            } label: {
-                Label(
-                    self.playerService.currentTrackInLibrary ? "Remove from Library" : "Add to Library",
-                    systemImage: self.playerService.currentTrackInLibrary ? "minus.circle" : "plus.circle"
-                )
+        SongContextMenu(
+            song: track,
+            client: self.playerService.ytMusicClient,
+            libraryToggle: SongLibraryToggle(
+                isInLibrary: self.playerService.currentTrackInLibrary,
+                toggle: { self.playerService.toggleLibraryStatus() }
+            ),
+            showsGoToArtist: self.showsGoToArtist(for: track),
+            showsGoToAlbum: self.showsGoToAlbum(for: track),
+            navigate: { destination in
+                if let artist = destination as? Artist {
+                    self.openArtist(artist)
+                } else if let album = destination as? Playlist {
+                    self.openAlbum(album)
+                }
             }
-        }
-
-        Divider()
-
-        ShareContextMenu.menuItem(for: track)
-
-        Divider()
-
-        AddToQueueContextMenu(song: track, playerService: self.playerService)
-
-        if self.hasPersonalAccount, let client = self.playerService.ytMusicClient {
-            Divider()
-
-            AddToPlaylistContextMenu(song: track, client: client)
-        }
-
-        let artist = track.artists.first(where: { $0.hasNavigableId })
-        let album = track.album
-        if artist != nil || album?.hasNavigableId == true {
-            Divider()
-        }
-
-        if let artist, self.navigationAction.openArtist != nil {
-            Button {
-                self.openArtist(artist)
-            } label: {
-                Label(String(localized: "Go to Artist"), systemImage: "person")
-            }
-        }
-
-        if let album, album.hasNavigableId, self.navigationAction.openAlbum != nil {
-            Button {
-                self.openAlbum(self.playlist(from: album, track: track))
-            } label: {
-                Label(String(localized: "Go to Album"), systemImage: "square.stack")
-            }
-        }
+        )
     }
 
     // MARK: - Error View
@@ -915,6 +877,22 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
     }
 
     // MARK: - Actions
+
+    /// Whether the context menu offers the track's artist: not when the player bar can't navigate
+    /// or that artist's page is already showing.
+    private func showsGoToArtist(for track: Song) -> Bool {
+        guard self.navigationAction.openArtist != nil else { return false }
+        guard let artist = track.artists.first(where: { $0.hasNavigableId }) else { return true }
+        return !PlayerBarCurrentRoute.isArtist(artist, routeArtistID: self.currentRouteArtistID)
+    }
+
+    /// Whether the context menu offers the track's album: not when the player bar can't navigate
+    /// or that album's page is already showing.
+    private func showsGoToAlbum(for track: Song) -> Bool {
+        guard self.navigationAction.openAlbum != nil else { return false }
+        guard let album = track.album else { return true }
+        return !PlayerBarCurrentRoute.isAlbum(album.detailPlaylist(), in: self.currentRouteAlbumIDs)
+    }
 
     private var hasPersonalAccount: Bool {
         self.authService.hasPersonalAccount
@@ -974,7 +952,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
 
         self.isResolvingArtist = true
 
-        Task {
+        self.artistResolutionTask = Task {
             let artist = await self.resolveArtist(named: query, client: client)
             guard !Task.isCancelled, self.currentTitleIdentity == identity else { return }
             self.resolvedArtist = artist
@@ -1002,7 +980,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
         let identity = self.currentTitleIdentity
         self.isResolvingAlbum = true
 
-        Task {
+        self.albumResolutionTask = Task {
             let album = await self.resolveAlbum(for: track, client: client)
             guard !Task.isCancelled, self.currentTitleIdentity == identity else { return }
             self.resolvedAlbum = album
@@ -1011,6 +989,15 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
             guard let album else { return }
             self.openAlbum(album, playsHaptic: false)
         }
+    }
+
+    private func cancelNavigationResolution() {
+        self.artistResolutionTask?.cancel()
+        self.albumResolutionTask?.cancel()
+        self.artistResolutionTask = nil
+        self.albumResolutionTask = nil
+        self.isResolvingArtist = false
+        self.isResolvingAlbum = false
     }
 
     private func openArtist(_ artist: Artist, playsHaptic: Bool = true) {
@@ -1132,7 +1119,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
 
     private func showAirPlayPicker() {
         HapticService.toggle()
-        self.playerService.showAirPlayPicker()
+        self.playerService.showAirPlayPicker(at: self.airPlayAnchor.screenPoint)
     }
 
     private func previousTrack() {
@@ -1190,7 +1177,7 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
 
     /// Performs the actual seek operation after slider interaction ends.
     private func performSeek() {
-        guard self.isSeeking, self.playerService.duration > 0 else { return }
+        guard self.isSeeking, self.canSeek else { return }
         let seekTime = self.seekValue * self.playerService.duration
         let holdID = self.seekHold.begin(target: seekTime)
         self.updateFormattedTimes(progress: seekTime, duration: self.playerService.duration)
@@ -1257,14 +1244,17 @@ struct PlayerBar: View { // swiftlint:disable:this type_body_length
     }
 
     private var volumeIcon: String {
-        let currentVolume = self.isAdjustingVolume ? self.volumeValue : self.playerService.volume
-        if currentVolume == 0 {
-            return "speaker.slash.fill"
-        } else if currentVolume < 0.5 {
-            return "speaker.wave.1.fill"
+        if self.displayedVolume == 0 {
+            "speaker.slash.fill"
+        } else if self.displayedVolume < 0.5 {
+            "speaker.wave.1.fill"
         } else {
-            return "speaker.wave.2.fill"
+            "speaker.wave.2.fill"
         }
+    }
+
+    private var displayedVolume: Double {
+        self.isAdjustingVolume ? self.volumeValue : self.playerService.volume
     }
 
     private var repeatIconName: String {

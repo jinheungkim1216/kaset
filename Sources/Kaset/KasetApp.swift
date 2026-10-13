@@ -225,6 +225,7 @@ struct KasetApp: App {
                 Color.clear
                     .frame(width: 1, height: 1)
             } else {
+                let startupState = self.authService.startupState
                 MainWindow(
                     navigationSelection: self.$navigationSelection,
                     youtubeNavigationSelection: self.$youtubeNavigationSelection,
@@ -254,6 +255,16 @@ struct KasetApp: App {
                 .environment(\.showCommandBar, self.$showCommandBar)
                 .environment(\.showWhatsNew, self.$showWhatsNew)
                 .environment(\.usesLegacyMacOS15UI, self.settings.useLegacyMacOS15UI)
+                .background {
+                    MainWindowRegistrationView(
+                        register: { [weak appDelegate = self.appDelegate] window in
+                            appDelegate?.registerMainWindow(window)
+                        },
+                        unregister: { [weak appDelegate = self.appDelegate] window in
+                            appDelegate?.unregisterMainWindow(window)
+                        }
+                    )
+                }
                 .onAppear {
                     DiagnosticsLogger.app.info("KasetApp: App content appeared")
                     self.textInputFocusState.startMonitoring()
@@ -271,13 +282,23 @@ struct KasetApp: App {
                         self.handleIncomingURL(url)
                     }
                 }
-                .task {
+                .task(id: startupState) {
+                    guard let startupState else { return }
                     DiagnosticsLogger.app.info("KasetApp: Root task started")
+                    let signOutSequence = self.authService.signOutSequence
                     // Check if user is already logged in from previous session
-                    await self.authService.checkLoginStatus()
+                    guard await self.authService.checkLoginStatusForStartup(
+                        expectedState: startupState
+                    ), !Task.isCancelled,
+                    self.authService.startupState == startupState,
+                    self.authService.signOutSequence == signOutSequence
+                    else { return }
                     DiagnosticsLogger.app.info("KasetApp: Login status check complete")
                     if !self.didCompleteStartupPlaybackCleanup {
-                        if self.authService.state.isLoggedIn {
+                        if self.authService.signOutSequence > 0 {
+                            self.playerService.clearPlaybackForSignOut()
+                            self.youtubePlayerService.stop()
+                        } else if self.authService.state.isLoggedIn {
                             self.playerService.clearGuestPlaybackForAuthenticatedStartup()
                         } else {
                             self.playerService.clearPlaybackForGuestStartup()
@@ -287,11 +308,14 @@ struct KasetApp: App {
                     }
                     self.drainPendingIncomingURLsIfReady()
 
-                    // Fetch accounts after login check (for account switcher)
+                    // This task owns account loading for startup, login, and recovery.
+                    self.accountService?.authenticationIdentityDidChange()
                     await self.accountService?.fetchAccounts()
 
                     // Warm up Foundation Models in background (macOS 26+ only)
-                    if !self.settings.useLegacyMacOS15UI, #available(macOS 26.0, *) {
+                    if !self.settings.useLegacyMacOS15UI, #available(macOS 26.0, *),
+                       !FoundationModelsService.shared.isWarmedUp
+                    {
                         await FoundationModelsService.shared.warmup()
                     }
                 }
@@ -541,6 +565,13 @@ struct KasetApp: App {
                         isFloating: self.youtubePlayerService.surfaceLocation == .floating,
                         isFullscreenOrTransitioning: self.youtubePlayerService.isWindowFullscreen
                     ))
+
+                Divider()
+
+                Picker(String(localized: "Appearance"), selection: self.$settings.appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.menu)
             }
 
             // Window menu - show main window
@@ -778,12 +809,7 @@ struct KasetApp: App {
         switch content {
         case let .song(videoId):
             DiagnosticsLogger.app.info("Playing song from URL: \(videoId)")
-            let song = Song(
-                id: videoId,
-                title: "Loading...",
-                artists: [],
-                videoId: videoId
-            )
+            let song = Song.placeholder(videoId: videoId)
             // Reserve intent synchronously so a later URL in the same batch
             // invalidates this asynchronous playback before it can start.
             let intent = self.playerService.beginMusicPlaybackIntent()
